@@ -7,15 +7,12 @@ function msg() {
     echo -e "\e[1;32m$@\e[0m"
 }
 
-# Don't touch repo if running on CI
-[ -z "$GH_RUN_ID" ] && repo_flag="--shallow-clone" || repo_flag="--no-update"
-
 # Build LLVM
 msg "Building LLVM..."
 ./build-llvm.py \
 	--clang-vendor "Proton" \
 	--targets "ARM;AArch64;X86" \
-	"$repo_flag" \
+	--shallow-clone \
 	--pgo kernel-defconfig \
 	--lto full
 

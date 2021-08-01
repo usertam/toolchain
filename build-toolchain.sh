@@ -10,11 +10,11 @@ function msg() {
 # Build LLVM
 msg "Building LLVM..."
 ./build-llvm.py \
-	--clang-vendor "Proton" \
+	--clang-vendor "usertam" \
 	--targets "ARM;AArch64;X86" \
 	--shallow-clone \
 	--pgo kernel-defconfig \
-	--lto full
+	--lto thin
 
 # Build binutils
 msg "Building binutils..."

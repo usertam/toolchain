@@ -7,6 +7,10 @@ function msg() {
     echo -e "\e[1;32m$@\e[0m"
 }
 
+# Install deps
+GITHUB_ACTIONS=1 $(dirname $0)/ci.sh deps
+sudo apt-get install -y patchelf
+
 # Build LLVM
 msg "Building LLVM..."
 ./build-llvm.py \
@@ -40,3 +44,10 @@ for bin in $(find install -mindepth 2 -maxdepth 3 -type f -exec file {} \; | gre
 	echo "$bin"
 	patchelf --set-rpath '$ORIGIN/../lib' "$bin"
 done
+
+# Create toolchain archive
+XZ_OPT="-9 -T0" tar --sort=name \
+    --mtime='1970-01-01' \
+    --owner=0 --group=0 --numeric-owner \
+    -cJf tc-build-install.tar.xz \
+    -C install $(ls -A install)

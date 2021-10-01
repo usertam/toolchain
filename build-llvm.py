@@ -542,7 +542,7 @@ def fetch_llvm_binutils(root_folder, update, shallow, ref):
     """
     p = root_folder.joinpath("llvm-project")
     cwd = p.as_posix()
-    if p.is_dir():
+    if p.joinpath(".git").is_dir():
         if update:
             utils.print_header("Updating LLVM")
 

@@ -1,0 +1,9 @@
+version: "3.9"
+services:
+  tc-build:
+    build: .
+    volumes:
+      - ./llvm-project:/work/llvm-project
+      - ./install:/work/install
+    stdin_open: true
+    tty: true

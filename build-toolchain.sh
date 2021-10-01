@@ -7,9 +7,8 @@ function msg() {
     echo -e "\e[1;32m$@\e[0m"
 }
 
-# Install deps
-GITHUB_ACTIONS=1 $(dirname $0)/ci.sh deps
-sudo apt-get install -y patchelf
+# cd to script dir
+cd "${0%/*}"
 
 # Build LLVM
 msg "Building LLVM..."
@@ -45,7 +44,8 @@ for bin in $(find install -mindepth 2 -maxdepth 3 -type f -exec file {} \; | gre
 	patchelf --set-rpath '$ORIGIN/../lib' "$bin"
 done
 
-# Create toolchain archive
+# Create tar.xz archive of built toolchain
+msg "Creating toolchain archive..."
 XZ_OPT="-9 -T0" tar --sort=name \
     --mtime='1970-01-01' \
     --owner=0 --group=0 --numeric-owner \

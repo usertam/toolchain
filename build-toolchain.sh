@@ -46,7 +46,7 @@ done
 
 # Create tar.xz archive of built toolchain
 msg "Creating toolchain archive..."
-XZ_OPT="-9 -T0" tar --sort=name \
+XZ_OPT="--x86 -9 -T0" tar --sort=name \
     --mtime='1970-01-01' \
     --owner=0 --group=0 --numeric-owner \
     -cJf tc-build-install.tar.xz \

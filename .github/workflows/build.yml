@@ -1,10 +1,10 @@
-name: Build test
+name: Build
 on:
   push:
     branches:
-      - main
+    - main
 jobs:
-  build-test:
+  build:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -16,3 +16,10 @@ jobs:
       run: bash ci.sh binutils
     - name: Build kernel
       run: bash ci.sh kernel
+    - name: Fix up build
+      run: bash ci.sh fixup
+    - name: Make dist
+      run: bash ci.sh dist
+    - uses: actions/upload-artifact@v3
+      with:
+        path: tc-dist.tar.zst

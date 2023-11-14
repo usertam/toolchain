@@ -9,7 +9,7 @@ set -eu
 function parse_parameters() {
     while (($#)); do
         case $1 in
-            all | binutils | deps | kernel | llvm) action=$1 ;;
+            all | binutils | deps | kernel | llvm | fixup | dist) action=$1 ;;
             *) exit 33 ;;
         esac
         shift
@@ -107,6 +107,30 @@ function do_llvm() {
         --targets AArch64 ARM X86 \
         --vendor-string usertam \
         "${extra_args[@]}"
+}
+
+function do_fixup() {
+    echo "Removing unused products..."
+    rm -rf "$install"/include "$install"/lib/*.a "$install"/lib/*.la
+
+    echo "Stripping remaining products..."
+    find "$install" -type f -executable -exec strip {} \;
+
+    echo "Patching rpaths for portability..."
+    for bin in $(find "$install" -mindepth 2 -maxdepth 3 -type f -exec file {} \; | grep 'ELF .* interpreter' | awk '{print $1}'); do
+        # Remove last character from file output (':')
+        bin="${bin: : -1}"
+        echo "- $bin"
+        patchelf --set-rpath '$ORIGIN/../lib' "$bin"
+    done
+}
+
+function do_dist() {
+    tar --sort=name \
+        --mtime='1970-01-01' \
+        --owner=0 --group=0 --numeric-owner \
+        -I zstd -cf tc-dist.tar.zst \
+        -C "$install" $(ls -A "$install")
 }
 
 parse_parameters "$@"

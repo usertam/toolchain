@@ -27,7 +27,7 @@ function do_binutils() {
     "$base"/build-binutils.py \
         --install-folder "$install" \
         --show-build-commands \
-        --targets x86_64
+        --targets aarch64 arm x86_64
 }
 
 function do_deps() {
@@ -94,17 +94,18 @@ function do_llvm() {
 
     "$base"/build-llvm.py \
         --assertions \
-        --build-stage1-only \
-        --build-target distribution \
-        --check-targets clang lld llvm \
+        --bolt \
+        --build-targets distribution \
         --install-folder "$install" \
-        --install-target distribution \
+        --install-targets distribution \
+        --lto thin \
+        --pgo kernel-defconfig \
         --projects clang lld \
         --quiet-cmake \
-        --ref release/17.x \
         --shallow-clone \
         --show-build-commands \
-        --targets X86 \
+        --targets AArch64 ARM X86 \
+        --vendor-string usertam \
         "${extra_args[@]}"
 }
 

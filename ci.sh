@@ -6,23 +6,6 @@ src=$base/src
 
 set -eu
 
-function parse_parameters() {
-    while (($#)); do
-        case $1 in
-            all | binutils | deps | kernel | llvm | fixup | dist) action=$1 ;;
-            *) exit 33 ;;
-        esac
-        shift
-    done
-}
-
-function do_all() {
-    do_deps
-    do_llvm
-    do_binutils
-    do_kernel
-}
-
 function do_binutils() {
     "$base"/build-binutils.py \
         --install-folder "$install" \
@@ -89,7 +72,7 @@ EOF
 }
 
 function do_llvm() {
-    extra_args=()
+    extra_args="$@"
     [[ -n ${GITHUB_ACTIONS:-} ]] && extra_args+=(--no-ccache)
 
     "$base"/build-llvm.py \
@@ -133,5 +116,4 @@ function do_dist() {
         -C "$install" $(ls -A "$install")
 }
 
-parse_parameters "$@"
-do_"${action:=all}"
+eval "$@"

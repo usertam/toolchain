@@ -529,7 +529,7 @@ if args.vendor_string:
     common_cmake_defines['CLANG_VENDOR'] = args.vendor_string
     common_cmake_defines['LLD_VENDOR'] = args.vendor_string
 if args.defines:
-    defines = dict(define.split('=', 1) for define in args.defines)
+    defines = dict(define.split('=', 1) for define in args.defines[0].strip().split())
     common_cmake_defines.update(defines)
 
 # Build bootstrap compiler if user did not request a single stage build

@@ -4,22 +4,87 @@ on:
     branches:
     - main
 jobs:
-  build:
+  builder:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
     - name: Install dependencies
-      run: bash ci.sh deps
+      run: bash ci.sh do_deps
+    - name: Get repository name and hostname
+      run: echo "HOSTNAME=bld01-${GITHUB_REPOSITORY#*/}" >> $GITHUB_ENV
+    - uses: tailscale/github-action@v2
+      with:
+        oauth-client-id: ${{secrets.TS_OAUTH_CLIENT_ID}}
+        oauth-secret: ${{secrets.TS_OAUTH_SECRET}}
+        hostname: ${{env.HOSTNAME}}
+        tags: tag:ci
+        args: --ssh
+    - name: Install distcc
+      run: sudo apt-get install -y distcc
+    - name: Wait for workers to come up
+      run: |
+        while true; do
+          ping -c 1 wrk01-tc-build 2>/dev/null && \
+          ping -c 1 wrk02-tc-build 2>/dev/null && \
+          ping -c 1 wrk03-tc-build 2>/dev/null && \
+          ping -c 1 wrk04-tc-build 2>/dev/null && break || true
+          sleep 1
+        done
     - name: Build LLVM
-      run: bash ci.sh llvm
+      run: DISTCC_HOSTS="wrk01-tc-build wrk02-tc-build wrk03-tc-build wrk04-tc-build" bash ci.sh do_llvm -D CMAKE_C_COMPILER_LAUNCHER=distcc CMAKE_CXX_COMPILER_LAUNCHER=distcc
     - name: Build binutils
-      run: bash ci.sh binutils
+      run: DISTCC_HOSTS="wrk01-tc-build wrk02-tc-build wrk03-tc-build wrk04-tc-build" bash ci.sh do_binutils -D CMAKE_C_COMPILER_LAUNCHER=distcc CMAKE_CXX_COMPILER_LAUNCHER=distcc
     - name: Build kernel
-      run: bash ci.sh kernel
+      run: DISTCC_HOSTS="wrk01-tc-build wrk02-tc-build wrk03-tc-build wrk04-tc-build" bash ci.sh do_kernel -D CMAKE_C_COMPILER_LAUNCHER=distcc CMAKE_CXX_COMPILER_LAUNCHER=distcc
     - name: Fix up build
-      run: bash ci.sh fixup
+      run: bash ci.sh do_fixup
     - name: Make dist
-      run: bash ci.sh dist
+      run: bash ci.sh do_dist
     - uses: actions/upload-artifact@v3
       with:
         path: tc-dist.tar.zst
+    - name: Hold
+      if: ${{ !cancelled() }}
+      run: |
+        sleep 86400
+
+  workers:
+    strategy:
+      matrix:
+        host: [wrk01, wrk02, wrk03, wrk04]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Install and start distcc
+      run: |
+        sudo apt-get install -y distcc
+        cat <<EOF | sudo tee /etc/default/distcc
+        STARTDISTCC="true"
+        ALLOWEDNETS="0.0.0.0/0"
+        LISTENER="0.0.0.0"
+        EOF
+        sudo sed -i 's/DAEMON_ARGS="/DAEMON_ARGS="--enable-tcp-insecure /' /etc/init.d/distcc
+        sudo systemctl daemon-reload
+        sudo systemctl restart distcc
+    - name: Get repository name and hostname
+      run: echo "HOSTNAME=${{matrix.host}}-${GITHUB_REPOSITORY#*/}" >> $GITHUB_ENV
+    - uses: tailscale/github-action@v2
+      with:
+        oauth-client-id: ${{secrets.TS_OAUTH_CLIENT_ID}}
+        oauth-secret: ${{secrets.TS_OAUTH_SECRET}}
+        hostname: ${{env.HOSTNAME}}
+        tags: tag:ci
+        args: --ssh
+    - name: Stay with main builder
+      run: |
+        while ! ping -c 1 bld01-tc-build 2>/dev/null; do
+          sleep 1
+        done
+        while ping -c 1 bld01-tc-build >/dev/null; do
+          sleep 30
+        done
+    - name: Display distcc status and logs
+      if: always()
+      run: |
+        systemctl status distcc
+        journalctl -u distcc
+        cat /var/log/distccd.log

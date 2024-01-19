@@ -9,7 +9,10 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Install dependencies
-      run: bash ci.sh do_deps
+      run: |
+        bash ci.sh do_deps
+        sudo apt-get install -y distcc rsync
+        sudo systemctl start rsync
     - name: Get repository name and hostname
       run: echo "HOSTNAME=bld01-${GITHUB_REPOSITORY#*/}" >> $GITHUB_ENV
     - uses: tailscale/github-action@v2
@@ -19,8 +22,6 @@ jobs:
         hostname: ${{env.HOSTNAME}}
         tags: tag:ci
         args: --ssh
-    - name: Install distcc
-      run: sudo apt-get install -y distcc
     - name: Get workers
       run: |
         WORKERS=()
@@ -68,6 +69,9 @@ jobs:
         hostname: ${{env.HOSTNAME}}
         tags: tag:ci
         args: --ssh
+    - name: Sync build directory from builder
+      run: |
+        nohup bash -c "while sleep 60; do rsync -a --exclude='*.o' -e 'ssh -o StrictHostKeyChecking=no' bld01-tc-build:$PWD/build/llvm build; done" >/dev/null 2>&1 </dev/null &
     - name: Stay with main builder
       run: |
         while ! ping -c 1 bld01-tc-build 2>/dev/null; do

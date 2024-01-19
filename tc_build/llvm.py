@@ -147,6 +147,8 @@ class LLVMBuilder(Builder):
 
         build_start = time.time()
         base_ninja_cmd = ['ninja', '-C', self.folders.build]
+        if 'JOBS' in os.environ:
+            base_ninja_cmd.extend(['-j', os.environ['JOBS']])
         self.run_cmd([*base_ninja_cmd, *self.build_targets])
 
         if self.check_targets:

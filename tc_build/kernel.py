@@ -69,7 +69,7 @@ class KernelBuilder(Builder):
                 '--output', self.bolt_sampling_output,
                 '--',
             ]  # yapf: disable
-        make_cmd += ['make', '-C', self.folders.source, f"-skj{os.cpu_count()}"]
+        make_cmd += ['make', '-C', self.folders.source, f"-skj{int(os.environ['JOBS']) if 'JOBS' in os.environ else os.cpu_count()}"]
         make_cmd += [f"{key}={self.make_variables[key]}" for key in sorted(self.make_variables)]
         make_cmd += [*self.config_targets, 'all']
 

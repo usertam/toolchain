@@ -62,7 +62,7 @@ class BinutilsBuilder(Builder):
         ] + [f"{var}={val}" for var, val in self.configure_vars.items()]
         self.run_cmd(configure_cmd, cwd=self.folders.build)
 
-        make_cmd = ['make', '-C', self.folders.build, '-s', f"-j{os.cpu_count()}", 'V=0']
+        make_cmd = ['make', '-C', self.folders.build, '-s', f"-j{int(os.environ['JOBS']) if 'JOBS' in os.environ else os.cpu_count()}", 'V=0']
         self.run_cmd(make_cmd)
 
         if self.folders.install:

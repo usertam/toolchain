@@ -21,21 +21,19 @@ jobs:
         args: --ssh
     - name: Install distcc
       run: sudo apt-get install -y distcc
-    - name: Wait for workers to come up
+    - name: Get workers
       run: |
-        while true; do
-          ping -c 1 wrk01-tc-build 2>/dev/null && \
-          ping -c 1 wrk02-tc-build 2>/dev/null && \
-          ping -c 1 wrk03-tc-build 2>/dev/null && \
-          ping -c 1 wrk04-tc-build 2>/dev/null && break || true
-          sleep 1
+        WORKERS=()
+        for i in {01..32}; do
+          WORKERS+=("wrk${i}-tc-build")
         done
+        echo "WORKERS=${WORKERS[@]}" >> $GITHUB_ENV
     - name: Build LLVM
-      run: DISTCC_HOSTS="wrk01-tc-build wrk02-tc-build wrk03-tc-build wrk04-tc-build" bash ci.sh do_llvm -D CMAKE_C_COMPILER_LAUNCHER=distcc CMAKE_CXX_COMPILER_LAUNCHER=distcc
+      run: DISTCC_HOSTS="${{env.WORKERS}}" JOBS=128 bash ci.sh do_llvm -D CMAKE_C_COMPILER_LAUNCHER=distcc CMAKE_CXX_COMPILER_LAUNCHER=distcc LLVM_PARALLEL_COMPILE_JOBS=128 LLVM_PARALLEL_LINK_JOBS=128
     - name: Build binutils
-      run: DISTCC_HOSTS="wrk01-tc-build wrk02-tc-build wrk03-tc-build wrk04-tc-build" bash ci.sh do_binutils -D CMAKE_C_COMPILER_LAUNCHER=distcc CMAKE_CXX_COMPILER_LAUNCHER=distcc
+      run: DISTCC_HOSTS="${{env.WORKERS}}" JOBS=128 bash ci.sh do_binutils -D CMAKE_C_COMPILER_LAUNCHER=distcc CMAKE_CXX_COMPILER_LAUNCHER=distcc LLVM_PARALLEL_COMPILE_JOBS=128 LLVM_PARALLEL_LINK_JOBS=128
     - name: Build kernel
-      run: DISTCC_HOSTS="wrk01-tc-build wrk02-tc-build wrk03-tc-build wrk04-tc-build" bash ci.sh do_kernel -D CMAKE_C_COMPILER_LAUNCHER=distcc CMAKE_CXX_COMPILER_LAUNCHER=distcc
+      run: DISTCC_HOSTS="${{env.WORKERS}}" JOBS=128 bash ci.sh do_kernel -D CMAKE_C_COMPILER_LAUNCHER=distcc CMAKE_CXX_COMPILER_LAUNCHER=distcc
     - name: Fix up build
       run: bash ci.sh do_fixup
     - name: Make dist
@@ -43,15 +41,11 @@ jobs:
     - uses: actions/upload-artifact@v3
       with:
         path: tc-dist.tar.zst
-    - name: Hold
-      if: ${{ !cancelled() }}
-      run: |
-        sleep 86400
 
   workers:
     strategy:
       matrix:
-        host: [wrk01, wrk02, wrk03, wrk04]
+        host: [wrk01, wrk02, wrk03, wrk04, wrk05, wrk06, wrk07, wrk08, wrk09, wrk10, wrk11, wrk12, wrk13, wrk14, wrk15, wrk16, wrk17, wrk18, wrk19, wrk20, wrk21, wrk22, wrk23, wrk24, wrk25, wrk26, wrk27, wrk28, wrk29, wrk30, wrk31, wrk32]
     runs-on: ubuntu-latest
     steps:
     - name: Install and start distcc

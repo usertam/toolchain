@@ -11,30 +11,24 @@ jobs:
     - name: Install dependencies
       run: |
         bash ci.sh do_deps
-        sudo apt-get install -y distcc rsync
-        sudo systemctl start rsync
-    - name: Get repository name and hostname
-      run: echo "HOSTNAME=bld01-${GITHUB_REPOSITORY#*/}" >> $GITHUB_ENV
+        sudo apt-get install -y icecc
+        sudo sed -i 's/^ICECC_SCHEDULER_HOST=""$/ICECC_SCHEDULER_HOST="sch01-tc-build"/' /etc/icecc/icecc.conf
+        echo 'ICECC_DEBUG="-vvv"' | sudo tee -a /etc/icecc/icecc.conf
+        sudo systemctl daemon-reload
+        sudo systemctl restart iceccd
     - uses: tailscale/github-action@v2
       with:
         oauth-client-id: ${{secrets.TS_OAUTH_CLIENT_ID}}
         oauth-secret: ${{secrets.TS_OAUTH_SECRET}}
-        hostname: ${{env.HOSTNAME}}
+        hostname: usr01-tc-build
         tags: tag:ci
         args: --ssh
-    - name: Get workers
-      run: |
-        WORKERS=()
-        for i in {01..32}; do
-          WORKERS+=("wrk${i}-tc-build")
-        done
-        echo "WORKERS=${WORKERS[@]}" >> $GITHUB_ENV
     - name: Build LLVM
-      run: DISTCC_HOSTS="${{env.WORKERS}}" JOBS=128 bash ci.sh do_llvm -D CMAKE_C_COMPILER_LAUNCHER=distcc CMAKE_CXX_COMPILER_LAUNCHER=distcc LLVM_PARALLEL_COMPILE_JOBS=128 LLVM_PARALLEL_LINK_JOBS=128
+      run: ICECC_DEBUG=debug PATH=/usr/lib/icecc/bin:$PATH JOBS=128 bash ci.sh do_llvm -D CMAKE_C_COMPILER_LAUNCHER=icecc CMAKE_CXX_COMPILER_LAUNCHER=icecc LLVM_PARALLEL_COMPILE_JOBS=128 LLVM_PARALLEL_LINK_JOBS=128
     - name: Build binutils
-      run: DISTCC_HOSTS="${{env.WORKERS}}" JOBS=128 bash ci.sh do_binutils -D CMAKE_C_COMPILER_LAUNCHER=distcc CMAKE_CXX_COMPILER_LAUNCHER=distcc LLVM_PARALLEL_COMPILE_JOBS=128 LLVM_PARALLEL_LINK_JOBS=128
+      run: ICECC_DEBUG=debug PATH=/usr/lib/icecc/bin:$PATH JOBS=128 bash ci.sh do_binutils -D CMAKE_C_COMPILER_LAUNCHER=icecc CMAKE_CXX_COMPILER_LAUNCHER=icecc LLVM_PARALLEL_COMPILE_JOBS=128 LLVM_PARALLEL_LINK_JOBS=128
     - name: Build kernel
-      run: DISTCC_HOSTS="${{env.WORKERS}}" JOBS=128 bash ci.sh do_kernel -D CMAKE_C_COMPILER_LAUNCHER=distcc CMAKE_CXX_COMPILER_LAUNCHER=distcc
+      run: ICECC_DEBUG=debug PATH=/usr/lib/icecc/bin:$PATH JOBS=128 bash ci.sh do_kernel
     - name: Fix up build
       run: bash ci.sh do_fixup
     - name: Make dist
@@ -43,25 +37,43 @@ jobs:
       with:
         path: tc-dist.tar.zst
 
-  workers:
-    strategy:
-      matrix:
-        host: [wrk01, wrk02, wrk03, wrk04, wrk05, wrk06, wrk07, wrk08, wrk09, wrk10, wrk11, wrk12, wrk13, wrk14, wrk15, wrk16, wrk17, wrk18, wrk19, wrk20, wrk21, wrk22, wrk23, wrk24, wrk25, wrk26, wrk27, wrk28, wrk29, wrk30, wrk31, wrk32]
+  scheduler:
     runs-on: ubuntu-latest
     steps:
-    - name: Install and start distcc
+    - name: Install and start icecream scheduler
       run: |
-        sudo apt-get install -y distcc
-        cat <<EOF | sudo tee /etc/default/distcc
-        STARTDISTCC="true"
-        ALLOWEDNETS="0.0.0.0/0"
-        LISTENER="0.0.0.0"
-        EOF
-        sudo sed -i 's/DAEMON_ARGS="/DAEMON_ARGS="--enable-tcp-insecure /' /etc/init.d/distcc
+        sudo apt-get install -y icecc
+        sudo sed -i 's/^ICECC_SCHEDULER_HOST=""$/ICECC_SCHEDULER_HOST="sch01-tc-build"/' /etc/icecc/icecc.conf
+        echo 'ICECC_DEBUG="-vvv"' | sudo tee -a /etc/icecc/icecc.conf
         sudo systemctl daemon-reload
-        sudo systemctl restart distcc
-    - name: Get repository name and hostname
-      run: echo "HOSTNAME=${{matrix.host}}-${GITHUB_REPOSITORY#*/}" >> $GITHUB_ENV
+        sudo systemctl restart icecc-scheduler
+    - uses: tailscale/github-action@v2
+      with:
+        oauth-client-id: ${{secrets.TS_OAUTH_CLIENT_ID}}
+        oauth-secret: ${{secrets.TS_OAUTH_SECRET}}
+        hostname: sch01-tc-build
+        tags: tag:ci
+        args: --ssh
+    - name: Stay with user builder...
+      run: |
+        while ! ping -c 1 usr01-tc-build 2>/dev/null; do sleep 1; done
+        while ping -c 1 usr01-tc-build >/dev/null; do sleep 30; done
+
+  builders:
+    strategy:
+      matrix:
+        host: [bld01, bld02, bld03, bld04, bld05, bld06, bld07, bld08, bld09, bld10, bld11, bld12, bld13, bld14, bld15, bld16, bld17, bld18, bld19, bld20, bld21, bld22, bld23, bld24, bld25, bld26, bld27, bld28, bld29, bld30, bld31, bld32]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Install and start icecream daemon
+      run: |
+        sudo apt-get install -y icecc
+        sudo sed -i 's/^ICECC_SCHEDULER_HOST=""$/ICECC_SCHEDULER_HOST="sch01-tc-build"/' /etc/icecc/icecc.conf
+        echo 'ICECC_DEBUG="-vvv"' | sudo tee -a /etc/icecc/icecc.conf
+        sudo systemctl daemon-reload
+        sudo systemctl restart iceccd
+    - name: Get hostname
+      run: echo "HOSTNAME=${{matrix.host}}-tc-build" >> $GITHUB_ENV
     - uses: tailscale/github-action@v2
       with:
         oauth-client-id: ${{secrets.TS_OAUTH_CLIENT_ID}}
@@ -69,20 +81,7 @@ jobs:
         hostname: ${{env.HOSTNAME}}
         tags: tag:ci
         args: --ssh
-    - name: Sync build directory from builder
+    - name: Stay with scheduler...
       run: |
-        nohup bash -c "while sleep 60; do rsync -a --exclude='*.o' -e 'ssh -o StrictHostKeyChecking=no' bld01-tc-build:$PWD/build/llvm build; done" >/dev/null 2>&1 </dev/null &
-    - name: Stay with main builder
-      run: |
-        while ! ping -c 1 bld01-tc-build 2>/dev/null; do
-          sleep 1
-        done
-        while ping -c 1 bld01-tc-build >/dev/null; do
-          sleep 30
-        done
-    - name: Display distcc status and logs
-      if: always()
-      run: |
-        systemctl status distcc
-        journalctl -u distcc
-        cat /var/log/distccd.log
+        while ! ping -c 1 sch01-tc-build 2>/dev/null; do sleep 1; done
+        while ping -c 1 sch01-tc-build >/dev/null; do sleep 30; done

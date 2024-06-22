@@ -6,23 +6,6 @@ src=$base/src
 
 set -eu
 
-function parse_parameters() {
-    while (($#)); do
-        case $1 in
-            all | binutils | deps | kernel | llvm | fixup | dist) action=$1 ;;
-            *) exit 33 ;;
-        esac
-        shift
-    done
-}
-
-function do_all() {
-    do_deps
-    do_llvm
-    do_binutils
-    do_kernel
-}
-
 function do_binutils() {
     "$base"/build-binutils.py \
         --install-folder "$install" \
@@ -31,9 +14,6 @@ function do_binutils() {
 }
 
 function do_deps() {
-    # We only run this when running on GitHub Actions
-    [[ -z ${GITHUB_ACTIONS:-} ]] && return 0
-
     sudo apt-get install -y --no-install-recommends \
         bc \
         bison \
@@ -90,24 +70,21 @@ EOF
 }
 
 function do_llvm() {
-    extra_args=()
-    [[ -n ${GITHUB_ACTIONS:-} ]] && extra_args+=(--no-ccache)
-
     "$base"/build-llvm.py \
-        --assertions \
-        --bolt \
-        --build-targets distribution \
-        --install-folder "$install" \
-        --install-targets distribution \
+        --projects clang lld \
+        --targets AArch64 ARM X86 \
         --lto thin \
         --pgo kernel-defconfig \
-        --projects clang lld \
+        --build-targets distribution \
+        --install-targets distribution \
+        --vendor-string usertam \
+        --install-folder "$install" \
         --quiet-cmake \
         --shallow-clone \
         --show-build-commands \
-        --targets AArch64 ARM X86 \
-        --vendor-string usertam \
-        "${extra_args[@]}"
+        --no-ccache \
+        --no-update \
+        "$@"
 }
 
 function do_fixup() {
@@ -126,13 +103,52 @@ function do_fixup() {
     done
 }
 
+function do_bootstrap() {
+    do_llvm --actions-stage bootstrap
+}
+
+function do_instrumented() {
+    do_llvm --actions-stage instrumented
+}
+
+function do_profiling() {
+    do_llvm --actions-stage profiling
+}
+
+function do_final() {
+    do_llvm --actions-stage final
+}
+
+function do_pack() {
+    tar -cf artifact.tar \
+        $(ls -d src build install)
+}
+
+function do_unpack() {
+    tar -xf artifact.tar
+    rm -rf artifact.tar
+}
+
 function do_dist() {
     tar --sort=name \
         --mtime='1970-01-01' \
         --owner=0 --group=0 --numeric-owner \
-        -I pixz -cf tc-build-install.tar.xz \
-        -C "$install" $(ls -A "$install")
+        -I pixz -cf toolchain-dist.tar.xz \
+        -C "$install" $(ls "$install")
 }
 
-parse_parameters "$@"
-do_"${action:=all}"
+function do_revision() {
+    hash=$(git -C src/llvm-project rev-parse HEAD | cut -c -7)
+    date=$(date +%y%m%d)
+    cat <<EOF > revision-notes.md
+Built against the main branch of [llvm-project](https://github.com/llvm/llvm-project) on commit \`$hash\`.
+- Projects: clang, lld
+- Targets: aarch64, arm, x86
+- Bolt: None
+- LTO: ThinLTO (thin)
+- PGO: kernel-defconfig
+EOF
+    echo "r$date.$hash"
+}
+
+eval "$@"

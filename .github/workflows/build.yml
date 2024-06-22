@@ -4,22 +4,123 @@ on:
     branches:
     - main
 jobs:
-  build:
+  build-llvm-bootstrap:
+    name: Build bootstrap LLVM
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@main
     - name: Install dependencies
-      run: bash ci.sh deps
-    - name: Build LLVM
-      run: bash ci.sh llvm
+      run: bash ci.sh do_deps
+    - name: Build
+      run: bash ci.sh do_bootstrap
+    - name: Pack artifact
+      if: always()
+      run: bash ci.sh do_pack
+    - uses: actions/upload-artifact@main
+      if: always()
+      with:
+        name: llvm-bootstrap
+        path: artifact.tar
+
+  build-llvm-instrumented:
+    name: Build instrumented LLVM
+    needs: build-llvm-bootstrap
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@main
+    - uses: actions/download-artifact@main
+      with:
+        name: llvm-bootstrap
+    - name: Install dependencies and unpack artifact
+      run: bash ci.sh "do_deps && do_unpack"
+    - name: Build
+      run: bash ci.sh do_instrumented
+    - name: Pack artifact
+      if: always()
+      run: bash ci.sh do_pack
+    - uses: actions/upload-artifact@main
+      if: always()
+      with:
+        name: llvm-instrumented
+        path: artifact.tar
+
+  build-llvm-profiling:
+    name: Profile instrumented LLVM
+    needs: build-llvm-instrumented
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@main
+    - uses: actions/download-artifact@main
+      with:
+        name: llvm-instrumented
+    - name: Install dependencies and unpack artifact
+      run: bash ci.sh "do_deps && do_unpack"
+    - name: Profile
+      run: bash ci.sh do_profiling
+    - name: Pack artifact
+      if: always()
+      run: bash ci.sh do_pack
+    - uses: actions/upload-artifact@main
+      if: always()
+      with:
+        name: llvm-profiling
+        path: artifact.tar
+
+  build-llvm-final:
+    name: Build final LLVM
+    needs: build-llvm-profiling
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@main
+    - uses: actions/download-artifact@main
+      with:
+        name: llvm-profiling
+    - name: Install dependencies and unpack artifact
+      run: bash ci.sh "do_deps && do_unpack"
+    - name: Build
+      run: bash ci.sh do_final
+    - name: Pack artifact
+      if: always()
+      run: bash ci.sh do_pack
+    - uses: actions/upload-artifact@main
+      if: always()
+      with:
+        name: llvm-final
+        path: artifact.tar
+
+  build-llvm-dist:
+    name: Make distribution with binutils
+    needs: build-llvm-final
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@main
+    - uses: actions/download-artifact@main
+      with:
+        name: llvm-final
+    - name: Install dependencies and unpack artifact
+      run: bash ci.sh "do_deps && do_unpack"
     - name: Build binutils
-      run: bash ci.sh binutils
-    - name: Build kernel
-      run: bash ci.sh kernel
-    - name: Fix up build
-      run: bash ci.sh fixup
-    - name: Make dist
-      run: bash ci.sh dist
+      run: bash ci.sh do_binutils
+    - name: Add finishing touches
+      run: bash ci.sh do_fixup
+    - name: Make .tar.xz distribution
+      run: bash ci.sh do_dist
     - uses: actions/upload-artifact@main
       with:
-        path: tc-build-install.tar.xz
+        name: distribution
+        path: toolchain-dist.tar.xz
+    - name: Generate revision
+      run: echo "REVISION=$(bash ci.sh do_revision)" >> $GITHUB_ENV
+    - uses: softprops/action-gh-release@master
+      with:
+        tag_name: ${{env.REVISION}}
+        body_path: revision-notes.md
+        files: toolchain-dist.tar.xz
+    - name: Pack artifact
+      if: always()
+      run: bash ci.sh do_pack
+    - uses: actions/upload-artifact@main
+      if: always()
+      with:
+        name: llvm-dist
+        path: artifact.tar

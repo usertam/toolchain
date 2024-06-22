@@ -4,6 +4,7 @@
 from argparse import ArgumentParser, RawTextHelpFormatter
 from pathlib import Path
 import platform
+import sys
 import textwrap
 import time
 
@@ -408,6 +409,10 @@ parser.add_argument('--vendor-string',
                     '''),
                     type=str,
                     default='ClangBuiltLinux')
+# Custom github-actions build stages
+parser.add_argument('--actions-stage',
+                    type=str,
+                    choices=['bootstrap', 'instrumented', 'profiling', 'final'])
 args = parser.parse_args()
 
 # Start tracking time that the script takes
@@ -534,7 +539,8 @@ if args.defines:
 
 # Build bootstrap compiler if user did not request a single stage build
 if (use_bootstrap := not args.build_stage1_only):
-    tc_build.utils.print_header('Building LLVM (bootstrap)')
+    if not args.actions_stage or args.actions_stage == 'bootstrap':
+        tc_build.utils.print_header('Building LLVM (bootstrap)')
 
     bootstrap = LLVMBootstrapBuilder()
     bootstrap.build_targets = ['distribution']
@@ -551,8 +557,13 @@ if (use_bootstrap := not args.build_stage1_only):
         bootstrap.projects.append('compiler-rt')
 
     bootstrap.check_dependencies()
-    bootstrap.configure()
-    bootstrap.build()
+    if not args.actions_stage or args.actions_stage == 'bootstrap':
+        bootstrap.configure()
+        bootstrap.build()
+
+        if args.actions_stage:
+            tc_build.utils.print_info('Building LLVM (bootstrap) done.')
+            sys.exit(0)
 
 # If the user did not specify CMAKE_C_FLAGS or CMAKE_CXX_FLAGS, add them as empty
 # to paste stage 2 to ensure there are no environment issues (since CFLAGS and CXXFLAGS
@@ -582,11 +593,17 @@ if args.pgo:
     instrumented.targets = final.targets
     instrumented.tools = StageTools(Path(bootstrap.folders.build, 'bin'))
 
-    tc_build.utils.print_header('Building LLVM (instrumented)')
-    instrumented.configure()
-    instrumented.build()
+    if not args.actions_stage or args.actions_stage == 'instrumented':
+        tc_build.utils.print_header('Building LLVM (instrumented)')
+        instrumented.configure()
+        instrumented.build()
 
-    tc_build.utils.print_header('Generating PGO profiles')
+        if args.actions_stage:
+            tc_build.utils.print_info('Building LLVM (instrumented) done.')
+            sys.exit(0)
+
+    if not args.actions_stage or args.actions_stage == 'profiling':
+        tc_build.utils.print_header('Generating PGO profiles')
     pgo_builders = []
     if 'llvm' in args.pgo:
         llvm_builder = def_llvm_builder_cls()
@@ -661,12 +678,19 @@ if args.pgo:
         pgo_builders.append(kernel_builder)
 
     for pgo_builder in pgo_builders:
+        if args.actions_stage and args.actions_stage != 'profiling':
+            continue
         if hasattr(pgo_builder, 'configure') and callable(pgo_builder.configure):
             tc_build.utils.print_info('Building LLVM for profiling...')
             pgo_builder.configure()
         pgo_builder.build()
 
-    instrumented.generate_profdata()
+    if not args.actions_stage or args.actions_stage == 'profiling':
+        instrumented.generate_profdata()
+
+        if args.actions_stage:
+            tc_build.utils.print_info('Generating PGO profiles done.')
+            sys.exit(0)
 
 # Final build
 final.build_targets = args.build_targets
@@ -716,5 +740,9 @@ tc_build.utils.print_header('Building LLVM (final)')
 final.configure()
 final.build()
 final.show_install_info()
+
+if args.actions_stage:
+    tc_build.utils.print_info('Building LLVM (final) done.')
+    sys.exit(0)
 
 print(f"Script duration: {tc_build.utils.get_duration(script_start)}")

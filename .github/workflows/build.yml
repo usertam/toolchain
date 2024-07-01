@@ -1,10 +1,11 @@
 name: Build distribution
 on:
+  workflow_dispatch:
   push:
-    branches:
-    - main
+  schedule:
+  - cron: '0 0 * * MON'
 jobs:
-  build-llvm-bootstrap:
+  build-stage-1:
     name: Build bootstrap LLVM
     runs-on: ubuntu-latest
     steps:
@@ -19,18 +20,18 @@ jobs:
     - uses: actions/upload-artifact@main
       if: always()
       with:
-        name: llvm-bootstrap
+        name: build-stage-1
         path: artifact.tar
 
-  build-llvm-instrumented:
+  build-stage-2:
     name: Build instrumented LLVM
-    needs: build-llvm-bootstrap
+    needs: build-stage-1
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@main
     - uses: actions/download-artifact@main
       with:
-        name: llvm-bootstrap
+        name: build-stage-1
     - name: Install dependencies and unpack artifact
       run: bash ci.sh "do_deps && do_unpack"
     - name: Build
@@ -41,18 +42,18 @@ jobs:
     - uses: actions/upload-artifact@main
       if: always()
       with:
-        name: llvm-instrumented
+        name: build-stage-2
         path: artifact.tar
 
-  build-llvm-profiling:
+  build-stage-3:
     name: Profile instrumented LLVM
-    needs: build-llvm-instrumented
+    needs: build-stage-2
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@main
     - uses: actions/download-artifact@main
       with:
-        name: llvm-instrumented
+        name: build-stage-2
     - name: Install dependencies and unpack artifact
       run: bash ci.sh "do_deps && do_unpack"
     - name: Profile
@@ -63,18 +64,18 @@ jobs:
     - uses: actions/upload-artifact@main
       if: always()
       with:
-        name: llvm-profiling
+        name: build-stage-3
         path: artifact.tar
 
-  build-llvm-final:
+  build-stage-4:
     name: Build final LLVM
-    needs: build-llvm-profiling
+    needs: build-stage-3
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@main
     - uses: actions/download-artifact@main
       with:
-        name: llvm-profiling
+        name: build-stage-3
     - name: Install dependencies and unpack artifact
       run: bash ci.sh "do_deps && do_unpack"
     - name: Build
@@ -85,18 +86,18 @@ jobs:
     - uses: actions/upload-artifact@main
       if: always()
       with:
-        name: llvm-final
+        name: build-stage-4
         path: artifact.tar
 
-  build-llvm-dist:
+  build-stage-5:
     name: Make distribution with binutils
-    needs: build-llvm-final
+    needs: build-stage-4
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@main
     - uses: actions/download-artifact@main
       with:
-        name: llvm-final
+        name: build-stage-4
     - name: Install dependencies and unpack artifact
       run: bash ci.sh "do_deps && do_unpack"
     - name: Build binutils
@@ -108,19 +109,19 @@ jobs:
     - uses: actions/upload-artifact@main
       with:
         name: distribution
-        path: toolchain-dist.tar.xz
+        path: toolchain-build.tar.xz
     - name: Generate revision
       run: echo "REVISION=$(bash ci.sh do_revision)" >> $GITHUB_ENV
     - uses: softprops/action-gh-release@master
       with:
         tag_name: ${{env.REVISION}}
         body_path: revision-notes.md
-        files: toolchain-dist.tar.xz
+        files: toolchain-build.tar.xz
     - name: Pack artifact
       if: always()
       run: bash ci.sh do_pack
     - uses: actions/upload-artifact@main
       if: always()
       with:
-        name: llvm-dist
+        name: build-stage-5
         path: artifact.tar

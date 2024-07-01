@@ -133,7 +133,7 @@ function do_dist() {
     tar --sort=name \
         --mtime='1970-01-01' \
         --owner=0 --group=0 --numeric-owner \
-        -I pixz -cf toolchain-dist.tar.xz \
+        -I pixz -cf toolchain-build.tar.xz \
         -C "$install" $(ls "$install")
 }
 

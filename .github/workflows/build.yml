@@ -10,6 +10,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@main
+    - name: Sanity check to resize swapfile
+      run: |
+        set -x
+        sudo swapoff /mnt/swapfile
+        sudo dd if=/dev/zero of=/mnt/swapfile bs=1G count=32
+        sudo chmod 600 /mnt/swapfile
+        sudo mkswap /mnt/swapfile
+        sudo swapon /mnt/swapfile
+        sudo swapon -s
+        sudo free -h
     - name: Install dependencies
       run: bash ci.sh do_deps
     - name: Build
@@ -73,6 +83,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@main
+    - name: Resize swapfile
+      run: |
+        sudo swapoff /mnt/swapfile
+        sudo dd if=/dev/zero of=/mnt/swapfile bs=1G count=32
+        sudo chmod 600 /mnt/swapfile
+        sudo mkswap /mnt/swapfile
+        sudo swapon /mnt/swapfile
+        sudo swapon -s
+        sudo free -h
     - uses: actions/download-artifact@main
       with:
         name: build-stage-3

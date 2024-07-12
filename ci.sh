@@ -75,6 +75,7 @@ function do_llvm() {
         --targets AArch64 ARM X86 \
         --lto thin \
         --pgo kernel-defconfig \
+        --bolt \
         --build-targets distribution \
         --install-targets distribution \
         --vendor-string usertam \

@@ -112,7 +112,7 @@ jobs:
         path: toolchain-build.tar.xz
     - name: Generate revision
       run: echo "REVISION=$(bash ci.sh do_revision)" >> $GITHUB_ENV
-    - uses: softprops/action-gh-release@master
+    - uses: softprops/action-gh-release@v2.1.0
       with:
         tag_name: ${{env.REVISION}}
         body_path: revision-notes.md

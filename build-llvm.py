@@ -50,9 +50,12 @@ parser.add_argument(
                     across several CI jobs (such as GitHub Actions, which limits how long a job can run).
                     The build folder of the earlier stages must already be present.
 
+                    With '--bolt', the 'final' stage stops once LLVM is built, leaving the 'bolt' stage to
+                    optimize clang and install the toolchain.
+
                     '''),
     type=str,
-    choices=['bootstrap', 'instrumented', 'profiling', 'final'],
+    choices=['bootstrap', 'instrumented', 'profiling', 'final', 'bolt'],
 )
 parser.add_argument(
     '--assertions',
@@ -534,6 +537,9 @@ if args.actions_stage == 'bootstrap' and args.build_stage1_only:
 if args.actions_stage in {'instrumented', 'profiling'} and not args.pgo:
     msg = f"'--actions-stage {args.actions_stage}' requires '--pgo'!"
     raise RuntimeError(msg)
+if args.actions_stage == 'bolt' and not args.bolt:
+    msg = "'--actions-stage bolt' requires '--bolt'!"
+    raise RuntimeError(msg)
 
 
 def should_run(stage: str) -> bool:
@@ -857,9 +863,19 @@ if args.bolt:
     llvm_targets = [final.host_target()] if final.host_target_is_enabled() else final.targets[0:1]
     final.bolt_builder.matrix['defconfig'] = llvm_targets
 
-tc_build.utils.print_header('Building LLVM (final)')
-final.configure()
-final.build()
+if should_run('final'):
+    tc_build.utils.print_header('Building LLVM (final)')
+    final.configure()
+    final.build()
+    # Without BOLT, there is nothing left to do but install, so the final stage
+    # only ends here when the 'bolt' stage follows it
+    if args.bolt:
+        stop_after('final')
+
+if args.bolt:
+    final.bolt_clang()
+
+final.install()
 final.show_install_info()
 
 print(f"Script duration: {tc_build.utils.get_duration(script_start)}")

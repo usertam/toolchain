@@ -196,7 +196,8 @@ class LLVMBuilder(Builder):
                 real_binary.replace(inst_binary)  # mv llvm llvm.inst
                 orig_binary.replace(real_binary)  # mv llvm.orig llvm
 
-            fdata_files = bolt_profile.parent.glob(f"{bolt_profile.name}.*.fdata")
+            # glob() returns a generator, which needs to be walked twice below
+            fdata_files = list(bolt_profile.parent.glob(f"{bolt_profile.name}.*.fdata"))
 
             # merge-fdata will print one line for each .fdata it merges.
             # Redirect the output to a log file in case it ever needs to be
@@ -209,7 +210,7 @@ class LLVMBuilder(Builder):
             ):
                 tc_build.utils.print_info('Merging .fdata files, this might take a while...')
                 subprocess.run(
-                    [self.tools.merge_fdata, *list(fdata_files)],
+                    [self.tools.merge_fdata, *fdata_files],
                     check=True,
                     stderr=err_file,
                     stdout=out_file,
@@ -285,17 +286,6 @@ class LLVMBuilder(Builder):
             self.run_cmd([*base_ninja_cmd, *check_targets])
 
         tc_build.utils.print_info(f"Build duration: {tc_build.utils.get_duration(build_start)}")
-
-        if self.bolt:
-            self.bolt_clang()
-
-        if tc_build.utils.path_is_set(self.folders.install):
-            if self.install_targets:
-                install_targets = [f"install-{target}" for target in self.install_targets]
-            else:
-                install_targets = ['install']
-            self.run_cmd([*base_ninja_cmd, *install_targets], capture_output=True)
-            tc_build.utils.create_gitignore(self.folders.install)
 
     @staticmethod
     def can_use_perf() -> bool:
@@ -602,6 +592,18 @@ class LLVMBuilder(Builder):
 
     def host_target_is_enabled(self) -> bool:
         return 'all' in self.targets or self.host_target() in self.targets
+
+    def install(self) -> None:
+        # Installation folder is optional
+        if not tc_build.utils.path_is_set(self.folders.install):
+            return
+
+        if self.install_targets:
+            install_targets = [f"install-{target}" for target in self.install_targets]
+        else:
+            install_targets = ['install']
+        self.run_cmd(['ninja', '-C', self.folders.build, *install_targets], capture_output=True)
+        tc_build.utils.create_gitignore(self.folders.install)
 
     def llvm_driver_binaries(self, project: str) -> list[str]:
         # Find all CMakeLists.txt for LLVM or clang tools that have multicall driver support

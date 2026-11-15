@@ -82,6 +82,7 @@ function do_llvm() {
     "$base"/build-llvm.py \
         --projects clang lld \
         --targets AArch64 ARM X86 \
+        --bolt \
         --lto thin \
         --pgo kernel-defconfig \
         --build-targets distribution \
@@ -162,9 +163,9 @@ function do_dist() {
 Built against the tip of llvm-project at commit [\`${commit:0:7}\`](https://github.com/llvm/llvm-project/commit/$commit).
 - Projects: clang, lld
 - Targets: aarch64, arm, x86
-- BOLT: None
+- PGO: IR instrumentation, arm64 virtconfig, arm multi_v5/aspeed_g5/multi_v7 and x86_64 defconfig on $linux
+- PLO: BOLT (lite), instrumentation, host kernel (arm64 virtconfig or x86_64 defconfig) on $linux
 - LTO: ThinLTO
-- PGO: kernel-defconfig on $linux
 EOF
 }
 

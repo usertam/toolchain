@@ -96,6 +96,16 @@ function do_llvm() {
         "$@"
 }
 
+# build-llvm.py can only shallow clone a branch, so fetch the exact commit to
+# build first, which build-llvm.py then uses as is
+function do_fetch() {
+    local llvm=$src/llvm-project
+    git init -q "$llvm"
+    git -C "$llvm" remote add origin https://github.com/llvm/llvm-project.git
+    git -C "$llvm" fetch --depth=1 origin "$1"
+    git -C "$llvm" checkout -q FETCH_HEAD
+}
+
 function do_rust() {
     "$base"/build-rust.py \
         --debug \
@@ -135,30 +145,20 @@ function do_unpack() {
 }
 
 function do_dist() {
-    # shellcheck disable=SC2046
-    tar --sort=name \
-        --mtime='1970-01-01' \
-        --owner=0 --group=0 --numeric-owner \
-        -I pixz -cf "$base"/toolchain-build.tar.xz \
-        -C "$install" $(ls "$install")
-}
-
-function do_release() {
-    local asset=$base/toolchain-build.tar.xz commit linux month rel
+    local commit linux
     commit=$(git -C "$src"/llvm-project rev-parse HEAD)
-    month=$(date +%y.%m)
 
     # build-llvm.py downloads the Linux source for PGO into src/linux-<version>
     linux=$(find "$src" -mindepth 1 -maxdepth 1 -type d -name 'linux-*' -printf '%f' -quit)
 
-    # Releases are numbered within each month (YY.MM-1, YY.MM-2, ...), so
-    # find the highest number tagged so far
-    rel=$(gh api "repos/{owner}/{repo}/git/matching-refs/tags/$month-" \
-        --jq '[.[].ref | split("-")[1] | tonumber?] | max // 0')
+    # shellcheck disable=SC2046
+    tar --sort=name \
+        --mtime='1970-01-01' \
+        --owner=0 --group=0 --numeric-owner \
+        -I pixz -cf "$base/toolchain-$(uname -m).tar.xz" \
+        -C "$install" $(ls "$install")
 
-    gh release create "$month-$((rel + 1))" "$asset" \
-        --notes-file - \
-        --target "$(git -C "$base" rev-parse HEAD)" <<EOF
+    cat <<EOF >"$base"/notes.md
 Built against the tip of llvm-project at commit [\`${commit:0:7}\`](https://github.com/llvm/llvm-project/commit/$commit).
 - Projects: clang, lld
 - Targets: aarch64, arm, x86
@@ -166,6 +166,34 @@ Built against the tip of llvm-project at commit [\`${commit:0:7}\`](https://gith
 - LTO: ThinLTO
 - PGO: kernel-defconfig on $linux
 EOF
+}
+
+# Publish the distributions of every arch, downloaded into distribution-<arch>
+function do_release() {
+    local asset assets=() month note notes rel tag
+    month=$(date +%y.%m)
+
+    # Releases are numbered within each month (YY.MM-1, YY.MM-2, ...), so
+    # find the highest number tagged so far
+    rel=$(gh api "repos/{owner}/{repo}/git/matching-refs/tags/$month-" \
+        --jq '[.[].ref | split("-")[1] | tonumber?] | max // 0')
+    tag=$month-$((rel + 1))
+
+    # Every arch must have been built from the same sources
+    notes=("$base"/distribution-*/notes.md)
+    for note in "${notes[@]}"; do
+        cmp "${notes[0]}" "$note"
+    done
+
+    # Add the tag to each asset name, as in toolchain-YY.MM-N-x86_64.tar.xz
+    for asset in "$base"/distribution-*/toolchain-*.tar.xz; do
+        assets+=("${asset%/*}/toolchain-$tag-${asset##*/toolchain-}")
+        mv "$asset" "${assets[-1]}"
+    done
+
+    gh release create "$tag" "${assets[@]}" \
+        --notes-file "${notes[0]}" \
+        --target "$(git -C "$base" rev-parse HEAD)"
 }
 
 # Run the requested action with any extra arguments (e.g. 'ci.sh llvm --actions-stage final')

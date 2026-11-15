@@ -7,19 +7,42 @@ on:
 permissions:
   contents: read
 jobs:
+  # Pick one LLVM commit up front, so that every arch builds the same sources
+  setup:
+    name: Pick LLVM commit
+    runs-on: ubuntu-latest
+    outputs:
+      llvm-commit: ${{ steps.llvm.outputs.commit }}
+    steps:
+    - id: llvm
+      run: echo "commit=$(git ls-remote https://github.com/llvm/llvm-project.git refs/heads/main | cut -f1)" >> "$GITHUB_OUTPUT"
+
   # Each LLVM stage is a job named after the stage it passes to '--actions-stage',
   # continuing from the artifact of the job in RESTORE
   bootstrap:
-    name: Build bootstrap LLVM
-    runs-on: ubuntu-latest
+    name: Build bootstrap LLVM (${{ matrix.arch }})
+    needs: setup
+    strategy: &matrix
+      matrix:
+        include:
+        - arch: x86_64
+          runner: ubuntu-24.04
+        - arch: aarch64
+          runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      LLVM_COMMIT: ${{ needs.setup.outputs.llvm-commit }}
     steps: &stage
     - uses: actions/checkout@main
     - uses: actions/download-artifact@main
       if: env.RESTORE
       with:
-        name: ${{ env.RESTORE }}
+        name: ${{ env.RESTORE }}-${{ matrix.arch }}
     - name: Install dependencies
       run: bash ci.sh deps
+    - name: Fetch LLVM
+      if: env.LLVM_COMMIT
+      run: bash ci.sh fetch "$LLVM_COMMIT"
     - name: Unpack artifact
       if: env.RESTORE
       run: bash ci.sh unpack
@@ -31,44 +54,46 @@ jobs:
     - uses: actions/upload-artifact@main
       if: always()
       with:
-        name: ${{ github.job }}
+        name: ${{ github.job }}-${{ matrix.arch }}
         path: artifact.tar
 
   instrumented:
-    name: Build instrumented LLVM
+    name: Build instrumented LLVM (${{ matrix.arch }})
     needs: bootstrap
-    runs-on: ubuntu-latest
+    strategy: *matrix
+    runs-on: ${{ matrix.runner }}
     env:
       RESTORE: bootstrap
     steps: *stage
 
   profiling:
-    name: Profile instrumented LLVM
+    name: Profile instrumented LLVM (${{ matrix.arch }})
     needs: instrumented
-    runs-on: ubuntu-latest
+    strategy: *matrix
+    runs-on: ${{ matrix.runner }}
     env:
       RESTORE: instrumented
     steps: *stage
 
   final:
-    name: Build final LLVM
+    name: Build final LLVM (${{ matrix.arch }})
     needs: profiling
-    runs-on: ubuntu-latest
+    strategy: *matrix
+    runs-on: ${{ matrix.runner }}
     env:
       RESTORE: profiling
     steps: *stage
 
   dist:
-    name: Make distribution with binutils
+    name: Make distribution with binutils (${{ matrix.arch }})
     needs: final
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    strategy: *matrix
+    runs-on: ${{ matrix.runner }}
     steps:
     - uses: actions/checkout@main
     - uses: actions/download-artifact@main
       with:
-        name: final
+        name: final-${{ matrix.arch }}
     - name: Install dependencies
       run: bash ci.sh deps
     - name: Unpack artifact
@@ -81,17 +106,33 @@ jobs:
       run: bash ci.sh dist
     - uses: actions/upload-artifact@main
       with:
-        name: distribution
-        path: toolchain-build.tar.xz
-    - name: Publish release
-      run: bash ci.sh release
-      env:
-        GH_TOKEN: ${{ github.token }}
+        name: distribution-${{ matrix.arch }}
+        path: |
+          toolchain-*.tar.xz
+          notes.md
     - name: Pack artifact
       if: failure()
       run: bash ci.sh pack
     - uses: actions/upload-artifact@main
       if: failure()
       with:
-        name: dist
+        name: dist-${{ matrix.arch }}
         path: artifact.tar
+
+  # Publish every arch in one release from one job, so they share its tag
+  release:
+    name: Publish release
+    needs: dist
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency: release
+    steps:
+    - uses: actions/checkout@main
+    - uses: actions/download-artifact@main
+      with:
+        pattern: distribution-*
+    - name: Publish release
+      run: bash ci.sh release
+      env:
+        GH_TOKEN: ${{ github.token }}

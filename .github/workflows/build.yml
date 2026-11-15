@@ -84,16 +84,25 @@ jobs:
       RESTORE: profiling
     steps: *stage
 
+  bolt:
+    name: Optimize final LLVM with BOLT (${{ matrix.arch }})
+    needs: final
+    strategy: *matrix
+    runs-on: ${{ matrix.runner }}
+    env:
+      RESTORE: final
+    steps: *stage
+
   dist:
     name: Make distribution with binutils (${{ matrix.arch }})
-    needs: final
+    needs: bolt
     strategy: *matrix
     runs-on: ${{ matrix.runner }}
     steps:
     - uses: actions/checkout@main
     - uses: actions/download-artifact@main
       with:
-        name: final-${{ matrix.arch }}
+        name: bolt-${{ matrix.arch }}
     - name: Install dependencies
       run: bash ci.sh deps
     - name: Unpack artifact
@@ -123,6 +132,7 @@ jobs:
   release:
     name: Publish release
     needs: dist
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write

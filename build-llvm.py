@@ -2,6 +2,7 @@
 # pylint: disable=invalid-name
 
 import platform
+import sys
 import textwrap
 import time
 from argparse import ArgumentParser, RawTextHelpFormatter
@@ -42,6 +43,17 @@ parser = ArgumentParser(formatter_class=RawTextHelpFormatter)
 clone_options = parser.add_mutually_exclusive_group()
 opt_options = parser.add_mutually_exclusive_group()
 
+parser.add_argument(
+    '--actions-stage',
+    help=textwrap.dedent('''\
+                    Only run one stage of the build then exit, so that a multi-stage build can be split
+                    across several CI jobs (such as GitHub Actions, which limits how long a job can run).
+                    The build folder of the earlier stages must already be present.
+
+                    '''),
+    type=str,
+    choices=['bootstrap', 'instrumented', 'profiling', 'final'],
+)
 parser.add_argument(
     '--assertions',
     help=textwrap.dedent('''\
@@ -514,6 +526,26 @@ args = parser.parse_args()
 # Start tracking time that the script takes
 script_start = time.time()
 
+# Make sure the stage requested by '--actions-stage' is part of this build, as
+# otherwise the script would carry on and do the final build instead
+if args.actions_stage == 'bootstrap' and args.build_stage1_only:
+    msg = "'--actions-stage bootstrap' cannot be used with '--build-stage1-only'!"
+    raise RuntimeError(msg)
+if args.actions_stage in {'instrumented', 'profiling'} and not args.pgo:
+    msg = f"'--actions-stage {args.actions_stage}' requires '--pgo'!"
+    raise RuntimeError(msg)
+
+
+def should_run(stage: str) -> bool:
+    return args.actions_stage in {None, stage}
+
+
+def stop_after(stage: str) -> None:
+    if args.actions_stage == stage:
+        print(f"Script duration: {tc_build.utils.get_duration(script_start)}")
+        sys.exit(0)
+
+
 # Folder validation
 tc_build_folder = Path(__file__).resolve().parent
 src_folder = Path(tc_build_folder, 'src')
@@ -642,8 +674,6 @@ if args.defines:
 
 # Build bootstrap compiler if user did not request a single stage build
 if use_bootstrap := not args.build_stage1_only:
-    tc_build.utils.print_header('Building LLVM (bootstrap)')
-
     bootstrap = LLVMBootstrapBuilder()
     bootstrap.build_targets = ['distribution']
     bootstrap.ccache = not args.no_ccache
@@ -659,8 +689,11 @@ if use_bootstrap := not args.build_stage1_only:
         bootstrap.projects.append('compiler-rt')
 
     bootstrap.check_dependencies()
-    bootstrap.configure()
-    bootstrap.build()
+    if should_run('bootstrap'):
+        tc_build.utils.print_header('Building LLVM (bootstrap)')
+        bootstrap.configure()
+        bootstrap.build()
+        stop_after('bootstrap')
 
 # If the user did not specify CMAKE_C_FLAGS or CMAKE_CXX_FLAGS, add them as empty
 # to paste stage 2 to ensure there are no environment issues (since CFLAGS and CXXFLAGS
@@ -690,11 +723,12 @@ if args.pgo:
     instrumented.targets = final.targets
     instrumented.tools = StageTools(Path(bootstrap.folders.build, 'bin'))
 
-    tc_build.utils.print_header('Building LLVM (instrumented)')
-    instrumented.configure()
-    instrumented.build()
+    if should_run('instrumented'):
+        tc_build.utils.print_header('Building LLVM (instrumented)')
+        instrumented.configure()
+        instrumented.build()
+        stop_after('instrumented')
 
-    tc_build.utils.print_header('Generating PGO profiles')
     pgo_builders = []
     if 'llvm' in args.pgo:
         llvm_builder = def_llvm_builder_cls()
@@ -769,14 +803,16 @@ if args.pgo:
 
         pgo_builders.append(kernel_builder)
 
-    for pgo_builder in pgo_builders:
-        if hasattr(pgo_builder, 'configure') and callable(pgo_builder.configure):
-            tc_build.utils.print_info('Building LLVM for profiling...')
-            # We know this is safe to call with no arguments
-            pgo_builder.configure()
-        pgo_builder.build()
-
-    instrumented.generate_profdata()
+    if should_run('profiling'):
+        tc_build.utils.print_header('Generating PGO profiles')
+        for pgo_builder in pgo_builders:
+            if hasattr(pgo_builder, 'configure') and callable(pgo_builder.configure):
+                tc_build.utils.print_info('Building LLVM for profiling...')
+                # We know this is safe to call with no arguments
+                pgo_builder.configure()
+            pgo_builder.build()
+        instrumented.generate_profdata()
+        stop_after('profiling')
 
 # Final build
 final.build_targets = args.build_targets

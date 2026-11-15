@@ -6,29 +6,11 @@ src=$base/src
 
 set -eu
 
-function parse_parameters() {
-    while (($#)); do
-        case $1 in
-            all | binutils | deps | kernel | llvm | rust) action=$1 ;;
-            *) exit 33 ;;
-        esac
-        shift
-    done
-}
-
-function do_all() {
-    do_deps
-    do_llvm
-    do_rust
-    do_binutils
-    do_kernel
-}
-
 function do_binutils() {
     "$base"/build-binutils.py \
         --install-folder "$install" \
         --show-build-commands \
-        --targets x86_64
+        --targets aarch64 arm x86_64
 }
 
 function do_deps() {
@@ -55,6 +37,8 @@ function do_deps() {
         lld \
         make \
         ninja-build \
+        patchelf \
+        pixz \
         pkg-config \
         python3 \
         texinfo \
@@ -95,24 +79,21 @@ EOF
 }
 
 function do_llvm() {
-    extra_args=()
-    [[ -n ${GITHUB_ACTIONS:-} ]] && extra_args+=(--no-ccache)
-
     "$base"/build-llvm.py \
-        --assertions \
-        --build-stage1-only \
-        --build-target distribution \
-        --check-targets clang lld llvm \
-        --distribution-profile rust \
-        --install-folder "$install" \
-        --install-target distribution \
         --projects clang lld \
+        --targets AArch64 ARM X86 \
+        --lto thin \
+        --pgo kernel-defconfig \
+        --build-targets distribution \
+        --install-targets distribution \
+        --vendor-string usertam \
+        --install-folder "$install" \
         --quiet-cmake \
-        --ref release/23.x \
         --shallow-clone \
         --show-build-commands \
-        --targets X86 \
-        "${extra_args[@]}"
+        --no-ccache \
+        --no-update \
+        "$@"
 }
 
 function do_rust() {
@@ -123,5 +104,70 @@ function do_rust() {
         --show-build-commands
 }
 
-parse_parameters "$@"
-do_"${action:=all}"
+function do_fixup() {
+    echo "Removing unused products..."
+    rm -rf "$install"/include "$install"/lib/*.a "$install"/lib/*.la
+
+    echo "Stripping remaining products..."
+    find "$install" -type f -executable -exec strip {} \;
+
+    echo "Patching rpaths for portability..."
+    find "$install" -mindepth 2 -maxdepth 3 -type f -print0 | while IFS= read -r -d '' bin; do
+        file -b "$bin" | grep -q 'ELF .* interpreter' || continue
+        echo "- $bin"
+        # shellcheck disable=SC2016
+        patchelf --set-rpath '$ORIGIN/../lib' "$bin"
+    done
+}
+
+# Carry the source, build, and install folders over to the next CI job
+function do_pack() {
+    local dirs=()
+    for dir in build install src; do
+        [[ -d $base/$dir ]] && dirs+=("$dir")
+    done
+    tar -C "$base" -cf "$base"/artifact.tar "${dirs[@]}"
+}
+
+function do_unpack() {
+    tar -C "$base" -xf "$base"/artifact.tar
+    rm -f "$base"/artifact.tar
+}
+
+function do_dist() {
+    # shellcheck disable=SC2046
+    tar --sort=name \
+        --mtime='1970-01-01' \
+        --owner=0 --group=0 --numeric-owner \
+        -I pixz -cf "$base"/toolchain-build.tar.xz \
+        -C "$install" $(ls "$install")
+}
+
+function do_release() {
+    local asset=$base/toolchain-build.tar.xz commit linux month rel
+    commit=$(git -C "$src"/llvm-project rev-parse HEAD)
+    month=$(date +%y.%m)
+
+    # build-llvm.py downloads the Linux source for PGO into src/linux-<version>
+    linux=$(find "$src" -mindepth 1 -maxdepth 1 -type d -name 'linux-*' -printf '%f' -quit)
+
+    # Releases are numbered within each month (YY.MM-1, YY.MM-2, ...), so
+    # find the highest number tagged so far
+    rel=$(gh api "repos/{owner}/{repo}/git/matching-refs/tags/$month-" \
+        --jq '[.[].ref | split("-")[1] | tonumber?] | max // 0')
+
+    gh release create "$month-$((rel + 1))" "$asset" \
+        --notes-file - \
+        --target "$(git -C "$base" rev-parse HEAD)" <<EOF
+Built against the tip of llvm-project at commit [\`${commit:0:7}\`](https://github.com/llvm/llvm-project/commit/$commit).
+- Projects: clang, lld
+- Targets: aarch64, arm, x86
+- BOLT: None
+- LTO: ThinLTO
+- PGO: kernel-defconfig on $linux
+EOF
+}
+
+# Run the requested action with any extra arguments (e.g. 'ci.sh llvm --actions-stage final')
+declare -F do_"${1:-}" >/dev/null || exit 33
+do_"$1" "${@:2}"

@@ -1,20 +1,97 @@
-name: Build test
+name: Build distribution
 on:
+  workflow_dispatch:
   push:
-    branches:
-      - main
+  schedule:
+  - cron: '0 0 * * MON'
+permissions:
+  contents: read
 jobs:
-  build-test:
+  # Each LLVM stage is a job named after the stage it passes to '--actions-stage',
+  # continuing from the artifact of the job in RESTORE
+  bootstrap:
+    name: Build bootstrap LLVM
     runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v7
+    steps: &stage
+    - uses: actions/checkout@main
+    - uses: actions/download-artifact@main
+      if: env.RESTORE
+      with:
+        name: ${{ env.RESTORE }}
     - name: Install dependencies
       run: bash ci.sh deps
-    - name: Build LLVM
-      run: bash ci.sh llvm
-    - name: Build Rust
-      run: bash ci.sh rust
+    - name: Unpack artifact
+      if: env.RESTORE
+      run: bash ci.sh unpack
+    - name: Build
+      run: bash ci.sh llvm --actions-stage ${{ github.job }}
+    - name: Pack artifact
+      if: always()
+      run: bash ci.sh pack
+    - uses: actions/upload-artifact@main
+      if: always()
+      with:
+        name: ${{ github.job }}
+        path: artifact.tar
+
+  instrumented:
+    name: Build instrumented LLVM
+    needs: bootstrap
+    runs-on: ubuntu-latest
+    env:
+      RESTORE: bootstrap
+    steps: *stage
+
+  profiling:
+    name: Profile instrumented LLVM
+    needs: instrumented
+    runs-on: ubuntu-latest
+    env:
+      RESTORE: instrumented
+    steps: *stage
+
+  final:
+    name: Build final LLVM
+    needs: profiling
+    runs-on: ubuntu-latest
+    env:
+      RESTORE: profiling
+    steps: *stage
+
+  dist:
+    name: Make distribution with binutils
+    needs: final
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@main
+    - uses: actions/download-artifact@main
+      with:
+        name: final
+    - name: Install dependencies
+      run: bash ci.sh deps
+    - name: Unpack artifact
+      run: bash ci.sh unpack
     - name: Build binutils
       run: bash ci.sh binutils
-    - name: Build kernel
-      run: bash ci.sh kernel
+    - name: Strip and patch toolchain
+      run: bash ci.sh fixup
+    - name: Make .tar.xz distribution
+      run: bash ci.sh dist
+    - uses: actions/upload-artifact@main
+      with:
+        name: distribution
+        path: toolchain-build.tar.xz
+    - name: Publish release
+      run: bash ci.sh release
+      env:
+        GH_TOKEN: ${{ github.token }}
+    - name: Pack artifact
+      if: failure()
+      run: bash ci.sh pack
+    - uses: actions/upload-artifact@main
+      if: failure()
+      with:
+        name: dist
+        path: artifact.tar

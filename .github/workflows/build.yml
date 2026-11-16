@@ -23,6 +23,7 @@ jobs:
     name: Build bootstrap LLVM (${{ matrix.arch }})
     needs: setup
     strategy: &matrix
+      fail-fast: false
       matrix:
         include:
         - arch: x86_64
@@ -34,6 +35,19 @@ jobs:
       LLVM_COMMIT: ${{ needs.setup.outputs.llvm-commit }}
     steps: &stage
     - uses: actions/checkout@main
+    - name: Free disk space
+      run: |
+        sudo rm -rf \
+          /usr/local/lib/android \
+          /usr/local/.ghcup /opt/ghc \
+          /usr/share/dotnet \
+          /usr/share/swift \
+          /opt/hostedtoolcache/CodeQL \
+          /usr/lib/jvm \
+          /usr/local/share/powershell \
+          "$AGENT_TOOLSDIRECTORY"
+        sudo docker system prune -af
+        df -h /
     - uses: actions/download-artifact@main
       if: env.RESTORE
       with:

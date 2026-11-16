@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -77,6 +78,18 @@ def libc_is_musl() -> bool:
 
 def path_is_set(path: Path) -> bool:
     return path != UNINIT_PATH
+
+
+def pid_is_running(pid: int) -> bool:
+    try:
+        # Signal 0 only checks that the process can be signaled
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # The process exists, it just belongs to another user
+        pass
+    return True
 
 
 def print_color(color: str, string: str) -> None:

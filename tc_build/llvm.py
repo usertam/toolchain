@@ -3,6 +3,7 @@ import platform
 import re
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import TypedDict
@@ -186,7 +187,28 @@ class LLVMBuilder(Builder):
             self.bolt_builder.bolt_sampling_output = Path(self.folders.build, 'perf.data')
 
         self.bolt_builder.toolchain_prefix = self.folders.build
-        self.bolt_builder.build()
+
+        if mode == 'instrumentation':
+            # Every instrumented process writes a profile of its own, which
+            # add up to more disk space than the machine may have by the end
+            # of a kernel build, so merge them every minute while it runs.
+            # An earlier profile would be merged as well, so remove it.
+            bolt_profile.unlink(missing_ok=True)
+            build_done = threading.Event()
+
+            def merge_while_building() -> None:
+                while not build_done.wait(60):
+                    self.merge_bolt_profiles(bolt_profile, skip_running=True)
+
+            merge_thread = threading.Thread(target=merge_while_building)
+            merge_thread.start()
+
+        try:
+            self.bolt_builder.build()
+        finally:
+            if mode == 'instrumentation':
+                build_done.set()
+                merge_thread.join()
 
         # With instrumentation, we need to combine the profiles we generated,
         # as they are separated by PID
@@ -196,27 +218,9 @@ class LLVMBuilder(Builder):
                 real_binary.replace(inst_binary)  # mv llvm llvm.inst
                 orig_binary.replace(real_binary)  # mv llvm.orig llvm
 
-            # glob() returns a generator, which needs to be walked twice below
-            fdata_files = list(bolt_profile.parent.glob(f"{bolt_profile.name}.*.fdata"))
-
-            # merge-fdata will print one line for each .fdata it merges.
-            # Redirect the output to a log file in case it ever needs to be
-            # inspected.
-            merge_fdata_log = Path(self.folders.build, 'merge-fdata.log')
-
-            with (
-                bolt_profile.open('w', encoding='utf-8') as out_file,
-                merge_fdata_log.open('w', encoding='utf-8') as err_file,
-            ):
-                tc_build.utils.print_info('Merging .fdata files, this might take a while...')
-                subprocess.run(
-                    [self.tools.merge_fdata, *fdata_files],
-                    check=True,
-                    stderr=err_file,
-                    stdout=out_file,
-                )
-            for fdata_file in fdata_files:
-                fdata_file.unlink()
+            # Merge the profiles written since the last merge of the build, or
+            # all that are left if merging failed along the way
+            self.merge_bolt_profiles(bolt_profile)
 
         if mode == 'sampling':
             perf2bolt_cmd = [
@@ -627,6 +631,47 @@ class LLVMBuilder(Builder):
             )
             and (tool := match.groups()[0]) not in skip_tools
         ]
+
+    def merge_bolt_profiles(self, bolt_profile: Path, skip_running: bool = False) -> None:
+        fdata_files = list(bolt_profile.parent.glob(f"{bolt_profile.name}.*.fdata"))
+        if skip_running:
+            # An instrumented process writes its profile as it exits, so the
+            # profile of a process that is still running may not be complete
+            fdata_files = [
+                fdata_file
+                for fdata_file in fdata_files
+                # The PID of the process comes before the last '.fdata'
+                if not tc_build.utils.pid_is_running(int(fdata_file.suffixes[-2][1:]))
+            ]
+        if not fdata_files:
+            return
+        fdata_size = sum(fdata_file.stat().st_size for fdata_file in fdata_files)
+
+        # merge-fdata sums the counts of the records that its inputs share, so
+        # the profile it has merged so far can be merged with the new ones
+        merge_fdata_cmd = [self.tools.merge_fdata, *fdata_files]
+        if bolt_profile.exists():
+            merge_fdata_cmd.append(bolt_profile)
+        merged_profile = bolt_profile.with_name(f"{bolt_profile.name}.tmp")
+
+        # merge-fdata will print one line for each .fdata it merges.
+        # Redirect the output to a log file in case it ever needs to be
+        # inspected.
+        merge_fdata_log = Path(self.folders.build, 'merge-fdata.log')
+
+        with (
+            merged_profile.open('w', encoding='utf-8') as out_file,
+            merge_fdata_log.open('a', encoding='utf-8') as err_file,
+        ):
+            subprocess.run(merge_fdata_cmd, check=True, stderr=err_file, stdout=out_file)
+        merged_profile.replace(bolt_profile)
+        for fdata_file in fdata_files:
+            fdata_file.unlink()
+
+        tc_build.utils.print_info(
+            f"Merged {len(fdata_files)} .fdata files ({fdata_size / 2**20:.0f} MiB) into "
+            f"{bolt_profile.name} ({bolt_profile.stat().st_size / 2**20:.0f} MiB)"
+        )
 
     def multicall_is_enabled(self) -> bool:
         return self.cmake_defines.get('LLVM_TOOL_LLVM_DRIVER_BUILD', 'OFF') == 'ON'

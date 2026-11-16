@@ -5,35 +5,25 @@ on:
   schedule:
   - cron: '0 0 * * MON'
 permissions:
+  # Downloading the artifact of another run needs 'actions: read'
+  actions: read
   contents: read
 jobs:
-  # Pick one LLVM commit up front, so that every arch builds the same sources
-  setup:
-    name: Pick LLVM commit
-    runs-on: ubuntu-latest
-    outputs:
-      llvm-commit: ${{ steps.llvm.outputs.commit }}
-    steps:
-    - id: llvm
-      run: echo "commit=$(git ls-remote https://github.com/llvm/llvm-project.git refs/heads/main | cut -f1)" >> "$GITHUB_OUTPUT"
-
-  # Each LLVM stage is a job named after the stage it passes to '--actions-stage',
-  # continuing from the artifact of the job in RESTORE
-  bootstrap:
-    name: Build bootstrap LLVM (${{ matrix.arch }})
-    needs: setup
+  # TEST: skip every stage before BOLT, and continue from the artifact of the
+  # job in RESTORE of the earlier run in RESTORE_RUN
+  bolt:
+    name: Optimize final LLVM with BOLT (${{ matrix.arch }})
     strategy: &matrix
       fail-fast: false
       matrix:
         include:
-        - arch: x86_64
-          runner: ubuntu-24.04
         - arch: aarch64
           runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     env:
-      LLVM_COMMIT: ${{ needs.setup.outputs.llvm-commit }}
-    steps: &stage
+      RESTORE: final
+      RESTORE_RUN: 43794549867
+    steps:
     - uses: actions/checkout@main
     - name: Free disk space
       run: |
@@ -52,6 +42,8 @@ jobs:
       if: env.RESTORE
       with:
         name: ${{ env.RESTORE }}-${{ matrix.arch }}
+        run-id: ${{ env.RESTORE_RUN }}
+        github-token: ${{ github.token }}
     - name: Install dependencies
       run: bash ci.sh deps
     - name: Fetch LLVM
@@ -70,42 +62,6 @@ jobs:
       with:
         name: ${{ github.job }}-${{ matrix.arch }}
         path: artifact.tar
-
-  instrumented:
-    name: Build instrumented LLVM (${{ matrix.arch }})
-    needs: bootstrap
-    strategy: *matrix
-    runs-on: ${{ matrix.runner }}
-    env:
-      RESTORE: bootstrap
-    steps: *stage
-
-  profiling:
-    name: Profile instrumented LLVM (${{ matrix.arch }})
-    needs: instrumented
-    strategy: *matrix
-    runs-on: ${{ matrix.runner }}
-    env:
-      RESTORE: instrumented
-    steps: *stage
-
-  final:
-    name: Build final LLVM (${{ matrix.arch }})
-    needs: profiling
-    strategy: *matrix
-    runs-on: ${{ matrix.runner }}
-    env:
-      RESTORE: profiling
-    steps: *stage
-
-  bolt:
-    name: Optimize final LLVM with BOLT (${{ matrix.arch }})
-    needs: final
-    strategy: *matrix
-    runs-on: ${{ matrix.runner }}
-    env:
-      RESTORE: final
-    steps: *stage
 
   dist:
     name: Make distribution with binutils (${{ matrix.arch }})

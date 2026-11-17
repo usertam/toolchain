@@ -89,13 +89,31 @@ jobs:
       RESTORE: instrumented
     steps: *stage
 
-  final:
-    name: Build final LLVM (${{ matrix.arch }})
+  cs-instrumented:
+    name: Build context-sensitive instrumented LLVM (${{ matrix.arch }})
     needs: profiling
     strategy: *matrix
     runs-on: ${{ matrix.runner }}
     env:
       RESTORE: profiling
+    steps: *stage
+
+  cs-profiling:
+    name: Profile context-sensitive instrumented LLVM (${{ matrix.arch }})
+    needs: cs-instrumented
+    strategy: *matrix
+    runs-on: ${{ matrix.runner }}
+    env:
+      RESTORE: cs-instrumented
+    steps: *stage
+
+  final:
+    name: Build final LLVM (${{ matrix.arch }})
+    needs: cs-profiling
+    strategy: *matrix
+    runs-on: ${{ matrix.runner }}
+    env:
+      RESTORE: cs-profiling
     steps: *stage
 
   bolt:

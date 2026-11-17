@@ -78,7 +78,35 @@ builder.build()
 EOF
 }
 
+# TEST: log the state of the runner once a minute, and every five seconds
+# while llvm-bolt runs, to see how close a stage comes to running out of
+# memory or disk
+function watch_runner() {
+    local final=$base/build/llvm/final
+    while sleep "$(pgrep -x llvm-bolt >/dev/null && echo 5 || echo 60)" >/dev/null 2>&1; do
+        echo "runner: $(date -u +%T)" \
+            "mem=$(awk '/^MemAvailable/ {printf "%.1fG", $2 / 2^20}' /proc/meminfo)" \
+            "swap=$(awk '/^SwapTotal/ {t = $2} /^SwapFree/ {f = $2} END {printf "%d/%dM", (t - f) / 2^10, t / 2^10}' /proc/meminfo)" \
+            "psi=$(awk '{printf "%s%s", sep, substr($2, 7); sep = "/"}' /proc/pressure/memory 2>/dev/null)" \
+            "dirty=$(awk '/^Dirty/ {printf "%dM", $2 / 2^10}' /proc/meminfo)" \
+            "disk=$(df --output=avail -BG / | tail -1 | tr -d ' ')" \
+            "load=$(cut -d' ' -f1 /proc/loadavg)" \
+            "fdata=$(find "$final" -maxdepth 1 -name 'clang.fdata.*.fdata' -printf '%s\n' 2>/dev/null |
+                awk '{n++; s += $1} END {printf "%d/%dM", n, s / 2^20}')" \
+            "oom=$(sudo -n dmesg 2>/dev/null | grep -ci 'out of memory\|oom-kill')" \
+            "top=$(ps -eo rss=,comm= --sort=-rss |
+                awk 'NR <= 3 {printf "%s%s:%dM", sep, $2, $1 / 2^10; sep = ","}')"
+    done
+}
+
 function do_llvm() {
+    if [[ -n ${GITHUB_ACTIONS:-} ]]; then
+        cat /proc/swaps
+        watch_runner &
+        # shellcheck disable=SC2064
+        trap "kill $! 2>/dev/null || true" EXIT
+    fi
+
     # On GitHub Actions, llvm-bolt needs more memory to instrument clang than
     # a runner has, so give it more swap to fall back on
     if [[ -n ${GITHUB_ACTIONS:-} ]]; then

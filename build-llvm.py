@@ -55,7 +55,7 @@ parser.add_argument(
 
                     '''),
     type=str,
-    choices=['bootstrap', 'instrumented', 'profiling', 'final', 'bolt'],
+    choices=['bootstrap', 'ir-instrument', 'ir-profile', 'final', 'bolt'],
 )
 parser.add_argument(
     '--assertions',
@@ -534,7 +534,7 @@ script_start = time.time()
 if args.actions_stage == 'bootstrap' and args.build_stage1_only:
     msg = "'--actions-stage bootstrap' cannot be used with '--build-stage1-only'!"
     raise RuntimeError(msg)
-if args.actions_stage in {'instrumented', 'profiling'} and not args.pgo:
+if args.actions_stage in {'ir-instrument', 'ir-profile'} and not args.pgo:
     msg = f"'--actions-stage {args.actions_stage}' requires '--pgo'!"
     raise RuntimeError(msg)
 if args.actions_stage == 'bolt' and not args.bolt:
@@ -729,11 +729,11 @@ if args.pgo:
     instrumented.targets = final.targets
     instrumented.tools = StageTools(Path(bootstrap.folders.build, 'bin'))
 
-    if should_run('instrumented'):
+    if should_run('ir-instrument'):
         tc_build.utils.print_header('Building LLVM (instrumented)')
         instrumented.configure()
         instrumented.build()
-        stop_after('instrumented')
+        stop_after('ir-instrument')
 
     pgo_builders = []
     if 'llvm' in args.pgo:
@@ -809,7 +809,7 @@ if args.pgo:
 
         pgo_builders.append(kernel_builder)
 
-    if should_run('profiling'):
+    if should_run('ir-profile'):
         tc_build.utils.print_header('Generating PGO profiles')
         for pgo_builder in pgo_builders:
             if hasattr(pgo_builder, 'configure') and callable(pgo_builder.configure):
@@ -818,7 +818,7 @@ if args.pgo:
                 pgo_builder.configure()
             pgo_builder.build()
         instrumented.generate_profdata()
-        stop_after('profiling')
+        stop_after('ir-profile')
 
 # Final build
 final.build_targets = args.build_targets

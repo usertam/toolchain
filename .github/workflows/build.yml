@@ -71,8 +71,8 @@ jobs:
         path: ${{ github.job }}-${{ matrix.arch }}.tar.zst
         archive: false
 
-  instrumented:
-    name: Build instrumented LLVM (${{ matrix.arch }})
+  ir-instrument:
+    name: Build IR instrumented LLVM (${{ matrix.arch }})
     needs: bootstrap
     strategy: *matrix
     runs-on: ${{ matrix.runner }}
@@ -80,22 +80,22 @@ jobs:
       RESTORE: bootstrap
     steps: *stage
 
-  profiling:
-    name: Profile instrumented LLVM (${{ matrix.arch }})
-    needs: instrumented
+  ir-profile:
+    name: Profile IR instrumented LLVM (${{ matrix.arch }})
+    needs: ir-instrument
     strategy: *matrix
     runs-on: ${{ matrix.runner }}
     env:
-      RESTORE: instrumented
+      RESTORE: ir-instrument
     steps: *stage
 
   final:
     name: Build final LLVM (${{ matrix.arch }})
-    needs: profiling
+    needs: ir-profile
     strategy: *matrix
     runs-on: ${{ matrix.runner }}
     env:
-      RESTORE: profiling
+      RESTORE: ir-profile
     steps: *stage
 
   bolt:

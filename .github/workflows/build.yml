@@ -48,28 +48,28 @@ jobs:
           "$AGENT_TOOLSDIRECTORY"
         sudo docker system prune -af
         df -h /
-    - uses: actions/download-artifact@main
-      if: env.RESTORE
-      with:
-        name: ${{ env.RESTORE }}-${{ matrix.arch }}
     - name: Install dependencies
       run: bash ci.sh deps
     - name: Fetch LLVM
       if: env.LLVM_COMMIT
       run: bash ci.sh fetch "$LLVM_COMMIT"
+    - uses: actions/download-artifact@main
+      if: env.RESTORE
+      with:
+        name: ${{ env.RESTORE }}-${{ matrix.arch }}.tar.zst
     - name: Unpack artifact
       if: env.RESTORE
-      run: bash ci.sh unpack
-    - name: Build
+      run: bash ci.sh unpack ${{ env.RESTORE }}-${{ matrix.arch }}.tar.zst
+    - name: Run stage
       run: bash ci.sh llvm --actions-stage ${{ github.job }}
     - name: Pack artifact
       if: always()
-      run: bash ci.sh pack
+      run: bash ci.sh pack ${{ github.job }}-${{ matrix.arch }}.tar.zst
     - uses: actions/upload-artifact@main
       if: always()
       with:
-        name: ${{ github.job }}-${{ matrix.arch }}
-        path: artifact.tar
+        path: ${{ github.job }}-${{ matrix.arch }}.tar.zst
+        archive: false
 
   instrumented:
     name: Build instrumented LLVM (${{ matrix.arch }})
@@ -116,11 +116,11 @@ jobs:
     - uses: actions/checkout@main
     - uses: actions/download-artifact@main
       with:
-        name: bolt-${{ matrix.arch }}
+        name: bolt-${{ matrix.arch }}.tar.zst
     - name: Install dependencies
       run: bash ci.sh deps
     - name: Unpack artifact
-      run: bash ci.sh unpack
+      run: bash ci.sh unpack bolt-${{ matrix.arch }}.tar.zst
     - name: Build binutils
       run: bash ci.sh binutils
     - name: Strip and patch toolchain
@@ -135,12 +135,12 @@ jobs:
           notes.md
     - name: Pack artifact
       if: failure()
-      run: bash ci.sh pack
+      run: bash ci.sh pack dist-${{ matrix.arch }}.tar.zst
     - uses: actions/upload-artifact@main
       if: failure()
       with:
-        name: dist-${{ matrix.arch }}
-        path: artifact.tar
+        path: dist-${{ matrix.arch }}.tar.zst
+        archive: false
 
   # Publish every arch in one release from one job, so they share its tag
   release:

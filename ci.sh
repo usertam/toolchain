@@ -43,7 +43,8 @@ function do_deps() {
         python3 \
         texinfo \
         xz-utils \
-        zlib1g-dev
+        zlib1g-dev \
+        zstd
 }
 
 function do_kernel() {
@@ -131,18 +132,19 @@ function do_fixup() {
     done
 }
 
-# Carry the source, build, and install folders over to the next CI job
+# Carry the source, build, and install folders over to the next CI job, in the
+# .tar.zst file named by the argument
 function do_pack() {
     local dirs=()
     for dir in build install src; do
         [[ -d $base/$dir ]] && dirs+=("$dir")
     done
-    tar -C "$base" -cf "$base"/artifact.tar "${dirs[@]}"
+    tar -C "$base" -I 'zstd -T0' -cf "$base/$1" "${dirs[@]}"
 }
 
 function do_unpack() {
-    tar -C "$base" -xf "$base"/artifact.tar
-    rm -f "$base"/artifact.tar
+    tar -C "$base" -I zstd -xf "$base/$1"
+    rm -f "$base/$1"
 }
 
 function do_dist() {

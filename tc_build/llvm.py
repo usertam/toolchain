@@ -70,6 +70,7 @@ class CmakeVars(TypedDict, total=False):
     CMAKE_C_COMPILER_LAUNCHER: str
     CMAKE_C_FLAGS: str
     CMAKE_EXE_LINKER_FLAGS: str
+    CMAKE_LINK_DEPENDS_USE_LINKER: str
     COMPILER_RT_BUILD_CRT: str
     COMPILER_RT_BUILD_GWP_ASAN: str
     COMPILER_RT_BUILD_LIBFUZZER: str
@@ -381,6 +382,9 @@ class LLVMBuilder(Builder):
         self.cmake_defines['CMAKE_CXX_COMPILER'] = self.tools.cxx
         if self.bolt:
             self.cmake_defines['CMAKE_EXE_LINKER_FLAGS'] = '-Wl,--emit-relocs'
+            # ninja links a binary again when it is newer than the dependencies
+            # that its linker reported for it, which would undo BOLT at install
+            self.cmake_defines['CMAKE_LINK_DEPENDS_USE_LINKER'] = 'OFF'
         if tc_build.utils.path_is_set(self.folders.install):
             self.cmake_defines['CMAKE_INSTALL_PREFIX'] = self.folders.install
 

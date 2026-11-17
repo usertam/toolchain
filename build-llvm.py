@@ -16,8 +16,10 @@ from tc_build.llvm import (
     CmakeVars,
     LLVMBootstrapBuilder,
     LLVMBuilder,
+    LLVMCSInstrumentedBuilder,
     LLVMInstrumentedBuilder,
     LLVMSlimBuilder,
+    LLVMSlimCSInstrumentedBuilder,
     LLVMSlimInstrumentedBuilder,
     LLVMSourceManager,
 )
@@ -55,7 +57,15 @@ parser.add_argument(
 
                     '''),
     type=str,
-    choices=['bootstrap', 'instrumented', 'profiling', 'final', 'bolt'],
+    choices=[
+        'bootstrap',
+        'instrumented',
+        'profiling',
+        'cs-instrumented',
+        'cs-profiling',
+        'final',
+        'bolt',
+    ],
 )
 parser.add_argument(
     '--assertions',
@@ -183,6 +193,28 @@ parser.add_argument(
 
                     '''),
     nargs='+',
+)
+parser.add_argument(
+    '--cspgo',
+    help=textwrap.dedent('''\
+                    Follow '--pgo' with a second, context-sensitive round of profiling (CSPGO). After the
+                    benchmarks of '--pgo' have run, the script will:
+
+                    1. Build another instrumented compiler, which is optimized with the profile data of the
+                       first round like the final compiler ('--lto' included) and is instrumented after
+                       inlining.
+
+                    2. Run the benchmarks of '--pgo' again with that compiler.
+
+                    3. Build the final compiler with the profile data of both rounds.
+
+                    This costs one more build of LLVM and one more run of the benchmarks.
+
+                    See https://clang.llvm.org/docs/UsersManual.html#cmdoption-fcs-profile-generate for more
+                    information.
+
+                    '''),
+    **BOOL_ARGS,
 )
 parser.add_argument(
     '-D',
@@ -529,6 +561,11 @@ args = parser.parse_args()
 # Start tracking time that the script takes
 script_start = time.time()
 
+# The context-sensitive round of profiling builds on the profile of '--pgo'
+if args.cspgo and not args.pgo:
+    msg = "'--cspgo' requires '--pgo'!"
+    raise RuntimeError(msg)
+
 # Make sure the stage requested by '--actions-stage' is part of this build, as
 # otherwise the script would carry on and do the final build instead
 if args.actions_stage == 'bootstrap' and args.build_stage1_only:
@@ -536,6 +573,9 @@ if args.actions_stage == 'bootstrap' and args.build_stage1_only:
     raise RuntimeError(msg)
 if args.actions_stage in {'instrumented', 'profiling'} and not args.pgo:
     msg = f"'--actions-stage {args.actions_stage}' requires '--pgo'!"
+    raise RuntimeError(msg)
+if args.actions_stage in {'cs-instrumented', 'cs-profiling'} and not args.cspgo:
+    msg = f"'--actions-stage {args.actions_stage}' requires '--cspgo'!"
     raise RuntimeError(msg)
 if args.actions_stage == 'bolt' and not args.bolt:
     msg = "'--actions-stage bolt' requires '--bolt'!"
@@ -550,6 +590,15 @@ def stop_after(stage: str) -> None:
     if args.actions_stage == stage:
         print(f"Script duration: {tc_build.utils.get_duration(script_start)}")
         sys.exit(0)
+
+
+def run_pgo_builders(builders: list) -> None:
+    for pgo_builder in builders:
+        if hasattr(pgo_builder, 'configure') and callable(pgo_builder.configure):
+            tc_build.utils.print_info('Building LLVM for profiling...')
+            # We know this is safe to call with no arguments
+            pgo_builder.configure()
+        pgo_builder.build()
 
 
 # Folder validation
@@ -811,14 +860,54 @@ if args.pgo:
 
     if should_run('profiling'):
         tc_build.utils.print_header('Generating PGO profiles')
-        for pgo_builder in pgo_builders:
-            if hasattr(pgo_builder, 'configure') and callable(pgo_builder.configure):
-                tc_build.utils.print_info('Building LLVM for profiling...')
-                # We know this is safe to call with no arguments
-                pgo_builder.configure()
-            pgo_builder.build()
+        run_pgo_builders(pgo_builders)
         instrumented.generate_profdata()
         stop_after('profiling')
+
+    if args.cspgo:
+        if args.full_toolchain:
+            cs_instrumented = LLVMCSInstrumentedBuilder()
+        else:
+            cs_instrumented = LLVMSlimCSInstrumentedBuilder()
+        cs_instrumented.build_targets = instrumented.build_targets
+        cs_instrumented.check_targets = instrumented.check_targets
+        cs_instrumented.cmake_defines.update(common_cmake_defines)
+        # The context-sensitive counters are added after inlining, which only
+        # matches the inlining of the final stage if this stage is optimized
+        # the same way, with the same LTO mode and the profile gathered above
+        if args.lto:
+            cs_instrumented.cmake_defines['LLVM_ENABLE_LTO'] = args.lto.capitalize()
+        cs_instrumented.cmake_defines['LLVM_PROFDATA_FILE'] = Path(
+            instrumented.folders.build, 'profdata.prof'
+        )
+        cs_instrumented.folders.build = Path(build_folder, 'cs-instrumented')
+        cs_instrumented.folders.source = llvm_folder
+        cs_instrumented.projects = final.projects
+        cs_instrumented.quiet_cmake = args.quiet_cmake
+        cs_instrumented.show_commands = args.show_build_commands
+        cs_instrumented.targets = final.targets
+        cs_instrumented.tools = StageTools(Path(bootstrap.folders.build, 'bin'))
+
+        if should_run('cs-instrumented'):
+            tc_build.utils.print_header('Building LLVM (context-sensitive instrumented)')
+            cs_instrumented.configure()
+            cs_instrumented.build()
+            stop_after('cs-instrumented')
+
+        # Run the same benchmarks as above with the compiler that was just built
+        if 'llvm' in args.pgo:
+            llvm_builder.tools = StageTools(Path(cs_instrumented.folders.build, 'bin'))
+            if not args.full_toolchain:
+                llvm_builder.tools.clang_tblgen = Path(bootstrap.folders.build, 'bin/clang-tblgen')
+                llvm_builder.tools.llvm_tblgen = Path(bootstrap.folders.build, 'bin/llvm-tblgen')
+        if pgo_targets:
+            kernel_builder.toolchain_prefix = cs_instrumented.folders.build
+
+        if should_run('cs-profiling'):
+            tc_build.utils.print_header('Generating context-sensitive PGO profiles')
+            run_pgo_builders(pgo_builders)
+            cs_instrumented.generate_profdata()
+            stop_after('cs-profiling')
 
 # Final build
 final.build_targets = args.build_targets
@@ -836,7 +925,8 @@ final.show_commands = args.show_build_commands
 if args.lto:
     final.cmake_defines['LLVM_ENABLE_LTO'] = args.lto.capitalize()
 if args.pgo:
-    final.cmake_defines['LLVM_PROFDATA_FILE'] = Path(instrumented.folders.build, 'profdata.prof')
+    profiled = cs_instrumented if args.cspgo else instrumented
+    final.cmake_defines['LLVM_PROFDATA_FILE'] = Path(profiled.folders.build, 'profdata.prof')
 
 if use_bootstrap:
     final.tools = StageTools(Path(bootstrap.folders.build, 'bin'))

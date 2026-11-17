@@ -907,6 +907,35 @@ class LLVMSlimInstrumentedBuilder(LLVMInstrumentedBuilder, LLVMSlimBuilder):
     pass
 
 
+class LLVMCSInstrumentedBuilder(LLVMBuilder):
+    def __init__(self):
+        super().__init__()
+
+        self.cmake_defines['LLVM_BUILD_INSTRUMENTED'] = 'CSIR'
+        self.cmake_defines['LLVM_BUILD_RUNTIME'] = 'OFF'
+
+    def generate_profdata(self):
+        if not (profiles := list(self.folders.build.joinpath('csprofiles').glob('*.profraw'))):
+            msg = 'No profiles generated?'
+            raise RuntimeError(msg)
+
+        # The context-sensitive profile only adds to the profile that this
+        # stage was optimized with, so the next stage needs the two merged.
+        llvm_prof_data_cmd = [
+            self.tools.llvm_profdata,
+            'merge',
+            f"-output={Path(self.folders.build, 'profdata.prof')}",
+            self.cmake_defines['LLVM_PROFDATA_FILE'],
+            *profiles,
+        ]
+        subprocess.run(llvm_prof_data_cmd, check=True)
+
+
+class LLVMSlimCSInstrumentedBuilder(LLVMCSInstrumentedBuilder, LLVMSlimBuilder):
+    # No methods to override, this class inherits everyting from these super classes
+    pass
+
+
 class LLVMSourceManager(GitSourceManager):
     def __init__(self, repo):
         super().__init__(repo)

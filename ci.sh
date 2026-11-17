@@ -86,6 +86,7 @@ function do_llvm() {
         --bolt \
         --lto thin \
         --pgo kernel-defconfig \
+        --cspgo \
         --build-targets distribution \
         --install-targets distribution \
         --vendor-string usertam \
@@ -165,7 +166,7 @@ function do_dist() {
 Built against the tip of llvm-project at commit [\`${commit:0:7}\`](https://github.com/llvm/llvm-project/commit/$commit).
 - Projects: clang, lld
 - Targets: aarch64, arm, x86
-- PGO: IR instrumentation, arm64 virtconfig, arm multi_v5/aspeed_g5/multi_v7 and x86_64 defconfig on $linux
+- PGO: IR and CSIR instrumentation, arm64 virtconfig, arm multi_v5/aspeed_g5/multi_v7 and x86_64 defconfig on $linux
 - PLO: BOLT (lite), instrumentation, host kernel (arm64 virtconfig or x86_64 defconfig) on $linux
 - LTO: ThinLTO
 EOF

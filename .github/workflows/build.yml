@@ -89,13 +89,31 @@ jobs:
       RESTORE: ir-instrument
     steps: *stage
 
-  final:
-    name: Build final LLVM (${{ matrix.arch }})
+  cs-instrument:
+    name: Build CSIR instrumented LLVM (${{ matrix.arch }})
     needs: ir-profile
     strategy: *matrix
     runs-on: ${{ matrix.runner }}
     env:
       RESTORE: ir-profile
+    steps: *stage
+
+  cs-profile:
+    name: Profile CSIR instrumented LLVM (${{ matrix.arch }})
+    needs: cs-instrument
+    strategy: *matrix
+    runs-on: ${{ matrix.runner }}
+    env:
+      RESTORE: cs-instrument
+    steps: *stage
+
+  final:
+    name: Build final LLVM (${{ matrix.arch }})
+    needs: cs-profile
+    strategy: *matrix
+    runs-on: ${{ matrix.runner }}
+    env:
+      RESTORE: cs-profile
     steps: *stage
 
   bolt:

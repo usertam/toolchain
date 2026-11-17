@@ -5,23 +5,14 @@ on:
   schedule:
   - cron: '0 0 * * MON'
 permissions:
+  # Downloading the artifact of another run needs 'actions: read'
+  actions: read
   contents: read
 jobs:
-  # Pick one LLVM commit up front, so that every arch builds the same sources
-  setup:
-    name: Pick LLVM commit
-    runs-on: ubuntu-latest
-    outputs:
-      llvm-commit: ${{ steps.llvm.outputs.commit }}
-    steps:
-    - id: llvm
-      run: echo "commit=$(git ls-remote https://github.com/llvm/llvm-project.git refs/heads/main | cut -f1)" >> "$GITHUB_OUTPUT"
-
-  # Each LLVM stage is a job named after the stage it passes to '--actions-stage',
-  # continuing from the artifact of the job in RESTORE
-  bootstrap:
-    name: Build bootstrap LLVM (${{ matrix.arch }})
-    needs: setup
+  # TEST: skip every stage before the context-sensitive round of PGO, and start
+  # it from the artifact of the job in RESTORE of the earlier run in RESTORE_RUN
+  cs-instrumented:
+    name: Build context-sensitive instrumented LLVM (${{ matrix.arch }})
     strategy: &matrix
       fail-fast: false
       matrix:
@@ -32,7 +23,8 @@ jobs:
           runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     env:
-      LLVM_COMMIT: ${{ needs.setup.outputs.llvm-commit }}
+      RESTORE: profiling
+      RESTORE_RUN: 44021900135
     steps: &stage
     - uses: actions/checkout@main
     - name: Free disk space
@@ -52,6 +44,8 @@ jobs:
       if: env.RESTORE
       with:
         name: ${{ env.RESTORE }}-${{ matrix.arch }}
+        run-id: ${{ env.RESTORE_RUN || github.run_id }}
+        github-token: ${{ env.RESTORE_RUN && github.token || '' }}
     - name: Install dependencies
       run: bash ci.sh deps
     - name: Fetch LLVM
@@ -70,33 +64,6 @@ jobs:
       with:
         name: ${{ github.job }}-${{ matrix.arch }}
         path: artifact.tar
-
-  instrumented:
-    name: Build instrumented LLVM (${{ matrix.arch }})
-    needs: bootstrap
-    strategy: *matrix
-    runs-on: ${{ matrix.runner }}
-    env:
-      RESTORE: bootstrap
-    steps: *stage
-
-  profiling:
-    name: Profile instrumented LLVM (${{ matrix.arch }})
-    needs: instrumented
-    strategy: *matrix
-    runs-on: ${{ matrix.runner }}
-    env:
-      RESTORE: instrumented
-    steps: *stage
-
-  cs-instrumented:
-    name: Build context-sensitive instrumented LLVM (${{ matrix.arch }})
-    needs: profiling
-    strategy: *matrix
-    runs-on: ${{ matrix.runner }}
-    env:
-      RESTORE: profiling
-    steps: *stage
 
   cs-profiling:
     name: Profile context-sensitive instrumented LLVM (${{ matrix.arch }})

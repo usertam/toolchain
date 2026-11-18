@@ -50,6 +50,7 @@ stall()
 state()
 ctypes.CDLL(None).mlockall(3)
 os.sched_setscheduler(0, os.SCHED_FIFO, os.sched_param(1))
+print(f"guard: on, for {patience} s of memory stall at {limit} or more", flush=True)
 
 pid, stalled = None, 0
 while Path(f"/proc/{parent}").exists():

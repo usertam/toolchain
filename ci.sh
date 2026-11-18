@@ -132,21 +132,29 @@ function do_llvm() {
     local arm began='' build took
 
     # TEST: what each sample of the stage gives llvm-bolt to instrument clang
-    # with: nothing, the swap file, zswap as well, or one malloc arena on top
+    # with: nothing, the swap file, or zswap as well. One sample goes without
+    # the guard, to see whether the runner is lost as in the whole stage.
     case ${SAMPLE:-} in
-        1) arm=nothing ;;
-        2 | 3 | 4) arm='file' ;;
-        5 | 6 | 7) arm='file zswap' ;;
-        *) arm='file zswap arena' ;;
+        1) arm='nothing unguarded' ;;
+        2) arm=nothing ;;
+        3 | 4 | 5) arm='file' ;;
+        *) arm='file zswap' ;;
     esac
     echo "arm: $arm"
 
     if [[ -n ${GITHUB_ACTIONS:-} ]]; then
+        # Only runners with a copy-on-write root disk have lost the stage
+        if [[ ! -e /dev/mapper/cow-root ]]; then
+            echo "::notice::$arm: skipped, the root disk is not cow-root"
+            exit 0
+        fi
         describe_runner || true
         watch_runner &
         # shellcheck disable=SC2064
         trap "kill $! 2>/dev/null || true; sudo -n dmesg -l emerg,alert,crit,err,warn | tail -30" EXIT
-        sudo -n python3 -I "$base"/guard-bolt.py "$$" 60 120 &
+        if [[ $arm != *unguarded* ]]; then
+            sudo -n python3 -I "$base"/guard-bolt.py "$$" 60 120 &
+        fi
     fi
 
     # On GitHub Actions, llvm-bolt needs more memory to instrument clang than
@@ -160,9 +168,6 @@ function do_llvm() {
     fi
     if [[ $arm == *zswap* ]]; then
         echo Y | sudo tee /sys/module/zswap/parameters/enabled
-    fi
-    if [[ $arm == *arena* ]]; then
-        export MALLOC_ARENA_MAX=1
     fi
 
     setsid "$base"/build-llvm.py \

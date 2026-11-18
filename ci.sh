@@ -80,6 +80,15 @@ EOF
 }
 
 function do_llvm() {
+    # On GitHub Actions, llvm-bolt needs more memory to instrument clang than
+    # a runner has, so give it more swap to fall back on
+    if [[ -n ${GITHUB_ACTIONS:-} ]]; then
+        sudo fallocate -l 8G /swap-llvm
+        sudo chmod 600 /swap-llvm
+        sudo mkswap /swap-llvm
+        sudo swapon /swap-llvm
+    fi
+
     "$base"/build-llvm.py \
         --projects clang lld \
         --targets AArch64 ARM X86 \

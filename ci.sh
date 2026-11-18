@@ -78,16 +78,16 @@ builder.build()
 EOF
 }
 
-# TEST: log the state of the runner once a minute, and every five seconds
-# while llvm-bolt runs, to see how close a stage comes to running out of
-# memory or disk
+# TEST: log the state of the runner every five seconds, to see how close a
+# stage comes to running out of memory or disk
 function watch_runner() {
     local final=$base/build/llvm/final
-    while sleep "$(pgrep -x llvm-bolt >/dev/null && echo 5 || echo 60)" >/dev/null 2>&1; do
+    while sleep 5 >/dev/null 2>&1; do
         echo "runner: $(date -u +%T)" \
             "mem=$(awk '/^MemAvailable/ {printf "%.1fG", $2 / 2^20}' /proc/meminfo)" \
             "swap=$(awk '/^SwapTotal/ {t = $2} /^SwapFree/ {f = $2} END {printf "%d/%dM", (t - f) / 2^10, t / 2^10}' /proc/meminfo)" \
             "psi=$(awk '{printf "%s%s", sep, substr($2, 7); sep = "/"}' /proc/pressure/memory 2>/dev/null)" \
+            "io=$(awk '{printf "%s%s", sep, substr($2, 7); sep = "/"}' /proc/pressure/io 2>/dev/null)" \
             "zswap=$(awk '/^Zswap:/ {z = $2} /^Zswapped:/ {s = $2} END {printf "%d/%dM", z / 2^10, s / 2^10}' /proc/meminfo)" \
             "pswp=$(awk '$1 == "pswpin" {i = $2} $1 == "pswpout" {o = $2} END {printf "%d/%dM", i / 256, o / 256}' /proc/vmstat)" \
             "dirty=$(awk '/^Dirty/ {printf "%dM", $2 / 2^10}' /proc/meminfo)" \
@@ -115,32 +115,57 @@ function describe_runner() {
             "$(tr '\n' ' ' </proc/"$pid"/cgroup)"
     done
     grep -H . /sys/module/zswap/parameters/*
-    # How fast the disk that the swap file goes on takes writes
-    echo "disk: $(sudo timeout -s INT 30 dd if=/dev/zero of=/swap-test bs=1M count=256 oflag=direct 2>&1 | tail -1)"
+    # What the disk that the swap file goes on is, and how fast it takes
+    # writes: to blocks not written before, to the same ones again, and to
+    # small ones that are to reach the disk one by one
+    lsblk -o NAME,TYPE,SIZE,ROTA,MOUNTPOINTS
+    sudo dmsetup table
+    sudo dmsetup status
+    for pass in new again; do
+        echo "disk $pass: $(sudo timeout -s INT 30 dd if=/dev/zero of=/swap-test bs=1M count=256 oflag=direct conv=notrunc 2>&1 | tail -1)"
+    done
+    echo "disk sync: $(sudo timeout -s INT 30 dd if=/dev/zero of=/swap-test bs=4k count=500 oflag=dsync conv=notrunc 2>&1 | tail -1)"
     sudo rm -f /swap-test
 }
 
 function do_llvm() {
+    local arm began='' build took
+
+    # TEST: what each sample of the stage gives llvm-bolt to instrument clang
+    # with: nothing, the swap file, zswap as well, or one malloc arena on top
+    case ${SAMPLE:-} in
+        1) arm=nothing ;;
+        2 | 3 | 4) arm='file' ;;
+        5 | 6 | 7) arm='file zswap' ;;
+        *) arm='file zswap arena' ;;
+    esac
+    echo "arm: $arm"
+
     if [[ -n ${GITHUB_ACTIONS:-} ]]; then
         describe_runner || true
         watch_runner &
         # shellcheck disable=SC2064
-        trap "kill $! 2>/dev/null || true" EXIT
+        trap "kill $! 2>/dev/null || true; sudo -n dmesg -l emerg,alert,crit,err,warn | tail -30" EXIT
         sudo -n python3 -I "$base"/guard-bolt.py "$$" 60 120 &
     fi
 
     # On GitHub Actions, llvm-bolt needs more memory to instrument clang than
     # a runner has, so give it more swap to fall back on, and let zswap keep
     # what is swapped out compressed in memory before any of it goes to disk
-    if [[ -n ${GITHUB_ACTIONS:-} ]]; then
+    if [[ $arm == *file* ]]; then
         sudo fallocate -l 8G /swap-llvm
         sudo chmod 600 /swap-llvm
         sudo mkswap /swap-llvm
         sudo swapon /swap-llvm
+    fi
+    if [[ $arm == *zswap* ]]; then
         echo Y | sudo tee /sys/module/zswap/parameters/enabled
     fi
+    if [[ $arm == *arena* ]]; then
+        export MALLOC_ARENA_MAX=1
+    fi
 
-    "$base"/build-llvm.py \
+    setsid "$base"/build-llvm.py \
         --projects clang lld \
         --targets AArch64 ARM X86 \
         --bolt \
@@ -156,7 +181,25 @@ function do_llvm() {
         --show-build-commands \
         --no-ccache \
         --no-update \
-        "$@"
+        "$@" &
+    build=$!
+
+    # TEST: only llvm-bolt instrumenting clang is of interest, so stop the
+    # stage once the clang that it wrote has been at work for a minute
+    while kill -0 "$build" 2>/dev/null; do
+        sleep 1
+        if pgrep -x llvm-bolt >/dev/null; then
+            : "${began:=$SECONDS}"
+        elif [[ -n $began ]]; then
+            took=$((SECONDS - began))
+            sleep 75
+            kill -0 "$build" 2>/dev/null || break
+            echo "::notice::$arm: llvm-bolt instrumented clang in $took s"
+            kill -- -"$build"
+            exit 0
+        fi
+    done
+    wait "$build"
 }
 
 # build-llvm.py can only shallow clone a branch, so fetch the exact commit to

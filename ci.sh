@@ -131,18 +131,20 @@ function describe_runner() {
 function do_llvm() {
     local arm began='' build took
 
-    # TEST: what each sample of the stage gives llvm-bolt to instrument clang
-    # with: nothing, the swap file, or zswap as well. One sample goes without
-    # the guard, to see whether the runner is lost as in the whole stage.
+    # TEST: every sample gives llvm-bolt the swap file and zswap to instrument
+    # clang with. Half of them go as the stage would on main, on whichever
+    # runner they get; the rest are watched as before, and only on runners
+    # with a copy-on-write root disk.
     case ${SAMPLE:-} in
-        1) arm='nothing unguarded' ;;
-        2) arm=nothing ;;
-        3 | 4 | 5) arm='file' ;;
+        1 | 2 | 3 | 4) arm='file zswap plain' ;;
         *) arm='file zswap' ;;
     esac
     echo "arm: $arm"
 
     if [[ -n ${GITHUB_ACTIONS:-} ]]; then
+        cat /proc/swaps
+    fi
+    if [[ -n ${GITHUB_ACTIONS:-} && $arm != *plain* ]]; then
         # Only runners with a copy-on-write root disk have lost the stage
         if [[ ! -e /dev/mapper/cow-root ]]; then
             echo "::notice::$arm: skipped, the root disk is not cow-root"
@@ -152,21 +154,17 @@ function do_llvm() {
         watch_runner &
         # shellcheck disable=SC2064
         trap "kill $! 2>/dev/null || true; sudo -n dmesg -l emerg,alert,crit,err,warn | tail -30" EXIT
-        if [[ $arm != *unguarded* ]]; then
-            sudo -n python3 -I "$base"/guard-bolt.py "$$" 60 120 &
-        fi
+        sudo -n python3 -I "$base"/guard-bolt.py "$$" 60 120 &
     fi
 
     # On GitHub Actions, llvm-bolt needs more memory to instrument clang than
     # a runner has, so give it more swap to fall back on, and let zswap keep
     # what is swapped out compressed in memory before any of it goes to disk
-    if [[ $arm == *file* ]]; then
+    if [[ -n ${GITHUB_ACTIONS:-} ]]; then
         sudo fallocate -l 8G /swap-llvm
         sudo chmod 600 /swap-llvm
         sudo mkswap /swap-llvm
         sudo swapon /swap-llvm
-    fi
-    if [[ $arm == *zswap* ]]; then
         echo Y | sudo tee /sys/module/zswap/parameters/enabled
     fi
 
@@ -200,6 +198,8 @@ function do_llvm() {
             sleep 75
             kill -0 "$build" 2>/dev/null || break
             echo "::notice::$arm: llvm-bolt instrumented clang in $took s"
+            cat /proc/swaps /proc/pressure/memory
+            grep pswp /proc/vmstat
             kill -- -"$build"
             exit 0
         fi

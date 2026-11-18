@@ -80,12 +80,14 @@ EOF
 
 function do_llvm() {
     # On GitHub Actions, llvm-bolt needs more memory to instrument clang than
-    # a runner has, so give it more swap to fall back on
+    # a runner has, so give it more swap to fall back on, and let zswap keep
+    # what is swapped out compressed in memory before any of it goes to disk
     if [[ -n ${GITHUB_ACTIONS:-} ]]; then
         sudo fallocate -l 8G /swap-llvm
         sudo chmod 600 /swap-llvm
         sudo mkswap /swap-llvm
         sudo swapon /swap-llvm
+        echo Y | sudo tee /sys/module/zswap/parameters/enabled
     fi
 
     "$base"/build-llvm.py \

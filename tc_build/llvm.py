@@ -154,6 +154,10 @@ class LLVMBuilder(Builder):
             inst_binary = real_binary.with_name(f"{binary_prefix}.inst")
 
             clang_inst_cmd = [
+                # With a malloc arena for each of its threads, llvm-bolt needs
+                # 1.6 GiB more memory to write the same binary
+                'env',
+                'MALLOC_ARENA_MAX=1',
                 self.tools.llvm_bolt,
                 '--instrument',
                 f"--instrumentation-file={bolt_profile}",

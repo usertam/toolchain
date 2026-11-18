@@ -78,7 +78,57 @@ builder.build()
 EOF
 }
 
+# TEST: log the state of the runner once a minute, and every five seconds
+# while llvm-bolt runs, to see how close a stage comes to running out of
+# memory or disk
+function watch_runner() {
+    local final=$base/build/llvm/final
+    while sleep "$(pgrep -x llvm-bolt >/dev/null && echo 5 || echo 60)" >/dev/null 2>&1; do
+        echo "runner: $(date -u +%T)" \
+            "mem=$(awk '/^MemAvailable/ {printf "%.1fG", $2 / 2^20}' /proc/meminfo)" \
+            "swap=$(awk '/^SwapTotal/ {t = $2} /^SwapFree/ {f = $2} END {printf "%d/%dM", (t - f) / 2^10, t / 2^10}' /proc/meminfo)" \
+            "psi=$(awk '{printf "%s%s", sep, substr($2, 7); sep = "/"}' /proc/pressure/memory 2>/dev/null)" \
+            "zswap=$(awk '/^Zswap:/ {z = $2} /^Zswapped:/ {s = $2} END {printf "%d/%dM", z / 2^10, s / 2^10}' /proc/meminfo)" \
+            "pswp=$(awk '$1 == "pswpin" {i = $2} $1 == "pswpout" {o = $2} END {printf "%d/%dM", i / 256, o / 256}' /proc/vmstat)" \
+            "dirty=$(awk '/^Dirty/ {printf "%dM", $2 / 2^10}' /proc/meminfo)" \
+            "disk=$(df --output=avail -BG / | tail -1 | tr -d ' ')" \
+            "load=$(cut -d' ' -f1 /proc/loadavg)" \
+            "fdata=$(find "$final" -maxdepth 1 -name 'clang.fdata.*.fdata' -printf '%s\n' 2>/dev/null |
+                awk '{n++; s += $1} END {printf "%d/%dM", n, s / 2^20}')" \
+            "oom=$(sudo -n dmesg 2>/dev/null | grep -ci 'out of memory\|oom-kill')" \
+            "top=$(ps -eo rss=,comm= --sort=-rss |
+                awk 'NR <= 3 {printf "%s%s:%dM", sep, $2, $1 / 2^10; sep = ","}')"
+    done
+}
+
+# TEST: show what the runner has for swap, and what stands to be killed when
+# it runs out of memory
+function describe_runner() {
+    local pid
+    cat /proc/swaps /proc/self/cgroup
+    systemctl is-active systemd-oomd earlyoom
+    sysctl vm.swappiness vm.overcommit_memory vm.panic_on_oom vm.min_free_kbytes
+    grep -H . "/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)"/memory.{max,high,swap.max,oom.group}
+    echo "oom_score_adj: self $(cat /proc/self/oom_score_adj)"
+    for pid in $(pgrep 'Runner|provjobd|hosted'); do
+        echo "oom_score_adj: $(cat /proc/"$pid"/comm) $(cat /proc/"$pid"/oom_score_adj)" \
+            "$(tr '\n' ' ' </proc/"$pid"/cgroup)"
+    done
+    grep -H . /sys/module/zswap/parameters/*
+    # How fast the disk that the swap file goes on takes writes
+    echo "disk: $(sudo timeout -s INT 30 dd if=/dev/zero of=/swap-test bs=1M count=256 oflag=direct 2>&1 | tail -1)"
+    sudo rm -f /swap-test
+}
+
 function do_llvm() {
+    if [[ -n ${GITHUB_ACTIONS:-} ]]; then
+        describe_runner || true
+        watch_runner &
+        # shellcheck disable=SC2064
+        trap "kill $! 2>/dev/null || true" EXIT
+        sudo -n python3 -I "$base"/guard-bolt.py "$$" 60 120 &
+    fi
+
     # On GitHub Actions, llvm-bolt needs more memory to instrument clang than
     # a runner has, so give it more swap to fall back on, and let zswap keep
     # what is swapped out compressed in memory before any of it goes to disk

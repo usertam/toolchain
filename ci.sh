@@ -38,7 +38,6 @@ function do_deps() {
         make \
         ninja-build \
         patchelf \
-        pixz \
         pkg-config \
         python3 \
         texinfo \
@@ -160,17 +159,23 @@ function do_unpack() {
 }
 
 function do_dist() {
-    local commit linux
+    local commit linux xz
     commit=$(git -C "$src"/llvm-project rev-parse HEAD)
 
     # build-llvm.py downloads the Linux source for PGO into src/linux-<version>
     linux=$(find "$src" -mindepth 1 -maxdepth 1 -type d -name 'linux-*' -printf '%f' -quit)
 
+    # One thread makes a single block, which is smaller than several. On
+    # x86_64, the filter for x86 code adds to that, and every xz can undo it;
+    # the one for arm64 code needs xz 5.4, so aarch64 goes without
+    xz='xz -T1 -9e'
+    [[ $(uname -m) = x86_64 ]] && xz='xz -T1 --x86 --lzma2=preset=9e'
+
     # shellcheck disable=SC2046
     tar --sort=name \
         --mtime='1970-01-01' \
         --owner=0 --group=0 --numeric-owner \
-        -I pixz -cf "$base/toolchain-$(uname -m).tar.xz" \
+        -I "$xz" -cf "$base/toolchain-$(uname -m).tar.xz" \
         -C "$install" $(ls "$install")
 
     cat <<EOF >"$base"/notes.md

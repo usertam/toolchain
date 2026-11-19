@@ -1,27 +1,19 @@
-name: Build distribution
+name: Test distribution size
 on:
   workflow_dispatch:
   push:
-  schedule:
-  - cron: '0 0 * * MON'
 permissions:
+  # Downloading the artifact of another run needs 'actions: read'
+  actions: read
   contents: read
 jobs:
-  # Pick one LLVM commit up front, so that every arch builds the same sources
-  setup:
-    name: Pick LLVM commit
-    runs-on: ubuntu-latest
-    outputs:
-      llvm-commit: ${{ steps.llvm.outputs.commit }}
-    steps:
-    - id: llvm
-      run: echo "commit=$(git ls-remote https://github.com/llvm/llvm-project.git refs/heads/main | cut -f1)" >> "$GITHUB_OUTPUT"
-
-  # Each LLVM stage is a job named after the stage it passes to '--actions-stage',
-  # continuing from the artifact of the job in RESTORE
-  bootstrap:
-    name: Build bootstrap LLVM (${{ matrix.arch }})
-    needs: setup
+  # TEST: build no LLVM. Run the BOLT stage again from the artifact of the job
+  # in RESTORE of the run in RESTORE_RUN, the one that made 26.11-2, so that the
+  # distribution differs from that release in nothing but what this branch
+  # changes. Then compare the two on four runners at once; bench/run.sh has the
+  # details.
+  bolt:
+    name: Optimize final LLVM with BOLT (${{ matrix.arch }})
     strategy: &matrix
       fail-fast: false
       matrix:
@@ -32,8 +24,9 @@ jobs:
           runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     env:
-      LLVM_COMMIT: ${{ needs.setup.outputs.llvm-commit }}
-    steps: &stage
+      RESTORE: final
+      RESTORE_RUN: 44339891822
+    steps:
     - uses: actions/checkout@main
     - name: Free disk space
       run: |
@@ -50,18 +43,21 @@ jobs:
         df -h /
     - name: Install dependencies
       run: bash ci.sh deps
-    - name: Fetch LLVM
-      if: env.LLVM_COMMIT
-      run: bash ci.sh fetch "$LLVM_COMMIT"
     - uses: actions/download-artifact@main
-      if: env.RESTORE
       with:
         name: ${{ env.RESTORE }}-${{ matrix.arch }}.tar.zst
+        run-id: ${{ env.RESTORE_RUN }}
+        github-token: ${{ github.token }}
     - name: Unpack artifact
-      if: env.RESTORE
       run: bash ci.sh unpack ${{ env.RESTORE }}-${{ matrix.arch }}.tar.zst
     - name: Run stage
       run: bash ci.sh llvm --actions-stage ${{ github.job }}
+    - name: Show clang
+      if: always()
+      run: |
+        ls -l build/llvm/final/bin/clang-* install/bin/clang-* || true
+        readelf -SW install/bin/clang-[0-9]* | grep -E '\.text|\.eh_frame|\.bolt' || true
+        readelf -lW install/bin/clang-[0-9]* | grep LOAD || true
     - name: Pack artifact
       if: always()
       run: bash ci.sh pack ${{ github.job }}-${{ matrix.arch }}.tar.zst
@@ -71,63 +67,10 @@ jobs:
         path: ${{ github.job }}-${{ matrix.arch }}.tar.zst
         archive: false
 
-  ir-instrument:
-    name: Build IR instrumented LLVM (${{ matrix.arch }})
-    needs: bootstrap
-    strategy: *matrix
-    runs-on: ${{ matrix.runner }}
-    env:
-      RESTORE: bootstrap
-    steps: *stage
-
-  ir-profile:
-    name: Profile IR instrumented LLVM (${{ matrix.arch }})
-    needs: ir-instrument
-    strategy: *matrix
-    runs-on: ${{ matrix.runner }}
-    env:
-      RESTORE: ir-instrument
-    steps: *stage
-
-  cs-instrument:
-    name: Build CSIR instrumented LLVM (${{ matrix.arch }})
-    needs: ir-profile
-    strategy: *matrix
-    runs-on: ${{ matrix.runner }}
-    env:
-      RESTORE: ir-profile
-    steps: *stage
-
-  cs-profile:
-    name: Profile CSIR instrumented LLVM (${{ matrix.arch }})
-    needs: cs-instrument
-    strategy: *matrix
-    runs-on: ${{ matrix.runner }}
-    env:
-      RESTORE: cs-instrument
-    steps: *stage
-
-  final:
-    name: Build final LLVM (${{ matrix.arch }})
-    needs: cs-profile
-    strategy: *matrix
-    runs-on: ${{ matrix.runner }}
-    env:
-      RESTORE: cs-profile
-    steps: *stage
-
-  bolt:
-    name: Optimize final LLVM with BOLT (${{ matrix.arch }})
-    needs: final
-    strategy: *matrix
-    runs-on: ${{ matrix.runner }}
-    env:
-      RESTORE: final
-    steps: *stage
-
   dist:
     name: Make distribution with binutils (${{ matrix.arch }})
     needs: bolt
+    if: ${{ !cancelled() }}
     strategy: *matrix
     runs-on: ${{ matrix.runner }}
     steps:
@@ -145,36 +88,42 @@ jobs:
       run: bash ci.sh fixup
     - name: Make .tar.xz distribution
       run: bash ci.sh dist
+    - name: Show distribution
+      run: |
+        ls -l toolchain-*.tar.xz install/bin/clang-* install/lib/libclang.so*
+        cat notes.md
     - uses: actions/upload-artifact@main
       with:
         name: distribution-${{ matrix.arch }}
         path: |
           toolchain-*.tar.xz
           notes.md
-    - name: Pack artifact
-      if: failure()
-      run: bash ci.sh pack dist-${{ matrix.arch }}.tar.zst
-    - uses: actions/upload-artifact@main
-      if: failure()
-      with:
-        path: dist-${{ matrix.arch }}.tar.zst
-        archive: false
 
-  # Publish every arch in one release from one job, so they share its tag
-  release:
-    name: Publish release
+  bench:
+    name: Compare with 26.11-2 (${{ matrix.arch }}, ${{ matrix.sample }})
     needs: dist
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    concurrency: release
+    if: ${{ !cancelled() }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+        sample: [1, 2, 3, 4]
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     steps:
     - uses: actions/checkout@main
+    - name: Install dependencies
+      run: bash ci.sh deps
     - uses: actions/download-artifact@main
       with:
-        pattern: distribution-*
-    - name: Publish release
-      run: bash ci.sh release
-      env:
-        GH_TOKEN: ${{ github.token }}
+        name: distribution-${{ matrix.arch }}
+    - name: Unpack distribution
+      run: |
+        mkdir -p bench-work/tc/candidate
+        tar -C bench-work/tc/candidate -xf toolchain-${{ matrix.arch }}.tar.xz
+    - name: Benchmark
+      run: bash bench/run.sh 26.11-2 candidate
+    - uses: actions/upload-artifact@main
+      if: always()
+      with:
+        name: bench-${{ matrix.arch }}-${{ matrix.sample }}
+        path: bench-work/log

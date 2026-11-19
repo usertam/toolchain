@@ -178,7 +178,7 @@ Built against the tip of llvm-project at commit [\`${commit:0:7}\`](https://gith
 - Projects: clang, lld
 - Targets: aarch64, arm, x86
 - PGO: IR and CSIR instrumentation, arm64 virtconfig, arm multi_v5/aspeed_g5/multi_v7 and x86_64 defconfig on $linux
-- PLO: BOLT (lite), instrumentation, host kernel (arm64 virtconfig or x86_64 defconfig) on $linux
+- PLO: BOLT, instrumentation, host kernel (arm64 virtconfig or x86_64 defconfig) on $linux
 - LTO: ThinLTO
 EOF
 }

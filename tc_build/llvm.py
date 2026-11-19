@@ -257,6 +257,10 @@ class LLVMBuilder(Builder):
             f"--data={bolt_profile}",
             '--dyno-stats',
             f"--icf={icf_val}",
+            # Lay out every function again, in the place of the old code. By
+            # default, only the functions with a profile move, to a new
+            # segment, and all of the old code stays in the file with them.
+            '--lite=0',
             '-o',
             bolt_binary,
             f"--reorder-blocks={'cache+' if use_cache_plus else 'ext-tsp'}",
@@ -264,6 +268,7 @@ class LLVMBuilder(Builder):
             '--split-all-cold',
             f"--split-functions{'=3' if use_sf_val else ''}",
             '--use-gnu-stack',
+            '--use-old-text',
             real_binary,
         ]
         self.run_cmd(clang_opt_cmd)

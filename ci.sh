@@ -133,7 +133,7 @@ function do_fixup() {
     rm -rf "$install"/include "$install"/lib/*.a "$install"/lib/*.la
 
     echo "Stripping remaining products..."
-    find "$install" -type f -executable -exec strip {} \;
+    find "$install" -type f \( -executable -o -name '*.so*' \) -exec strip {} \;
 
     echo "Patching rpaths for portability..."
     find "$install" -mindepth 2 -maxdepth 3 -type f -print0 | while IFS= read -r -d '' bin; do

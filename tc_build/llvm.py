@@ -61,6 +61,7 @@ class CmakeVars(TypedDict, total=False):
     # impacts internal typing usage, users are still able to assign whatever
     # values they want via '--defines'. Keep sorted alphabetically.
     CLANG_ENABLE_ARCMT: str
+    CLANG_ENABLE_CIR: str
     CLANG_ENABLE_STATIC_ANALYZER: str
     CLANG_PLUGIN_SUPPORT: str
     CLANG_VENDOR: str
@@ -785,6 +786,13 @@ class LLVMSlimBuilder(LLVMBuilder):
         arcmt_cmakelists = Path(self.folders.source, 'clang/lib/ARCMigrate/CMakeLists.txt')
         if arcmt_cmakelists.exists():
             slim_clang_defines['CLANG_ENABLE_ARCMT'] = 'OFF'
+
+        # We don't use ClangIR ('-fclangir'), which is built into clang by
+        # default now and pulls in MLIR.
+        # Disable this option only if it exists to prevent CMake warnings.
+        # https://github.com/llvm/llvm-project/commit/dfd756d1b830ff810644d19ed1eb7ff5f08a8585
+        if Path(self.folders.source, 'clang/lib/CIR').exists():
+            slim_clang_defines['CLANG_ENABLE_CIR'] = 'OFF'
 
         slim_llvm_defines: CmakeVars = {
             # Don't build bindings; they are for other languages that the kernel does not use

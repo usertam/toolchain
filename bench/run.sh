@@ -2,7 +2,9 @@
 # TEST: compare two releases of this repository, $1 and $2, on the machine this
 # runs on: kernel builds, single files and startup. The two take turns in an
 # order that changes every round, so that drift of the machine hits both alike,
-# and a result is the ratio of the second to the first within a round.
+# and a result is the ratio of the second to the first within a round. One that
+# is in bench-work/tc under its name already, as bolt.sh leaves them, is taken
+# as it is.
 
 set -euo pipefail
 
@@ -28,11 +30,14 @@ free -m | sed -n 2,3p
 echo "transparent huge pages: $(cat /sys/kernel/mm/transparent_hugepage/enabled)"
 
 for name in "${names[@]}"; do
-    tar=toolchain-$name-$arch.tar.xz
-    curl -fsSL -o dl/"$tar" https://github.com/"${GITHUB_REPOSITORY:-usertam/toolchain}"/releases/download/"$name"/"$tar"
-    mkdir tc/"$name"
-    tar -C tc/"$name" -xf dl/"$tar"
-    echo "$name: $(tc/"$name"/bin/clang --version | head -1), tarball sha256 $(sha256sum <dl/"$tar" | cut -c1-16)"
+    if [[ ! -d tc/$name ]]; then
+        tar=toolchain-$name-$arch.tar.xz
+        curl -fsSL -o dl/"$tar" https://github.com/"${GITHUB_REPOSITORY:-usertam/toolchain}"/releases/download/"$name"/"$tar"
+        mkdir tc/"$name"
+        tar -C tc/"$name" -xf dl/"$tar"
+        echo "$name: tarball sha256 $(sha256sum <dl/"$tar" | cut -c1-16)"
+    fi
+    echo "$name: $(tc/"$name"/bin/clang --version | head -1)"
     # A clang that llvm-bolt went over has one more segment of code, aligned to 2 MiB
     tc/"$name"/bin/llvm-readelf -lW tc/"$name"/bin/clang | grep LOAD
     # An arm64 kernel has uint64_t as unsigned long long where it includes arm_neon.h
@@ -53,6 +58,16 @@ sha256sum -c <<EOF
 EOF
 tar -C src -xf dl/$linux.tar.xz
 python3 -I -m zipfile -e dl/$sqlite.zip src
+
+# Two that differ in nothing but where their code is make the same object
+for name in "${names[@]}"; do
+    tc/"$name"/bin/clang -w -O2 -c "src/$sqlite/sqlite3.c" -o build/sqlite3-"$name".o
+done
+if cmp -s build/sqlite3-"${names[0]}".o build/sqlite3-"${names[1]}".o; then
+    echo "sqlite3.o at -O2: the same from both"
+else
+    echo "sqlite3.o at -O2: not the same from both"
+fi
 
 # Both get the C++ headers of the system's g++, whichever they would pick
 cxxinc=(-nostdinc++)

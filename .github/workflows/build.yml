@@ -1,32 +1,68 @@
-name: Benchmark releases
+name: Benchmark BOLT variants
 on:
   workflow_dispatch:
   push:
 permissions:
+  # Downloading the artifact of another run needs 'actions: read'
+  actions: read
   contents: read
 jobs:
-  # TEST: build nothing. Compare two releases with each other instead, on four
-  # runners at once; bench/run.sh has the details. The first three of x86_64
-  # are in run 44520827300.
+  # TEST: build nothing. Run llvm-bolt over the clang of 26.11-2 again, from the
+  # artifacts of the run in RESTORE_RUN that made it, in a way that leaves less
+  # of the old code behind, and compare that with the way of the release, on
+  # four runners at once; bench/bolt.sh has the details.
   bench:
-    name: Compare releases (${{ matrix.arch }}, ${{ matrix.sample }})
+    name: Compare BOLT variants (${{ matrix.variant }}, ${{ matrix.sample }})
     strategy:
       fail-fast: false
       matrix:
-        arch: [aarch64]
+        variant: [trap, full]
         sample: [1, 2, 3, 4]
-        include:
-        - arch: x86_64
-          sample: 4
-    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
+    env:
+      RESTORE_RUN: 44339891822
     steps:
     - uses: actions/checkout@main
+    - name: Free disk space
+      run: |
+        sudo rm -rf \
+          /usr/local/lib/android \
+          /usr/local/.ghcup /opt/ghc \
+          /usr/share/dotnet \
+          /usr/share/swift \
+          /opt/hostedtoolcache/CodeQL \
+          /usr/lib/jvm \
+          /usr/local/share/powershell \
+          "$AGENT_TOOLSDIRECTORY"
+        sudo docker system prune -af
+        df -h /
     - name: Install dependencies
       run: bash ci.sh deps
+    # The clang that llvm-bolt has not been over yet, and llvm-bolt
+    - uses: actions/download-artifact@main
+      with:
+        name: final-x86_64.tar.zst
+        run-id: ${{ env.RESTORE_RUN }}
+        github-token: ${{ github.token }}
+    - name: Unpack clang and llvm-bolt
+      run: |
+        tar -I zstd -xf final-x86_64.tar.zst build/llvm/final/bin/clang-24 build/llvm/bootstrap/bin/llvm-bolt
+        rm final-x86_64.tar.zst
+    # The profile of the kernel build with the instrumented clang
+    - uses: actions/download-artifact@main
+      with:
+        name: bolt-x86_64.tar.zst
+        run-id: ${{ env.RESTORE_RUN }}
+        github-token: ${{ github.token }}
+    - name: Unpack profile
+      run: |
+        tar -I zstd -xf bolt-x86_64.tar.zst build/llvm/final/clang.fdata
+        rm bolt-x86_64.tar.zst
+        ls -l build/llvm/final build/llvm/final/bin build/llvm/bootstrap/bin
     - name: Benchmark
-      run: bash bench/run.sh 26.11-1 26.11-2
+      run: bash bench/bolt.sh ${{ matrix.variant }}
     - uses: actions/upload-artifact@main
       if: always()
       with:
-        name: bench-${{ matrix.arch }}-${{ matrix.sample }}
+        name: bench-${{ matrix.variant }}-${{ matrix.sample }}
         path: bench-work/log

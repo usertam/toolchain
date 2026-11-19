@@ -170,7 +170,7 @@ function do_dist() {
     tar --sort=name \
         --mtime='1970-01-01' \
         --owner=0 --group=0 --numeric-owner \
-        -I pixz -cf "$base/toolchain-$(uname -m).tar.xz" \
+        -I 'pixz -9' -cf "$base/toolchain-$(uname -m).tar.xz" \
         -C "$install" $(ls "$install")
 
     cat <<EOF >"$base"/notes.md

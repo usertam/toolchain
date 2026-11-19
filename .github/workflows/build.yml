@@ -6,14 +6,18 @@ permissions:
   contents: read
 jobs:
   # TEST: build nothing. Compare two releases with each other instead, on four
-  # runners of each arch at once; bench/run.sh has the details.
+  # runners at once; bench/run.sh has the details. The first three of x86_64
+  # are in run 44520827300.
   bench:
     name: Compare releases (${{ matrix.arch }}, ${{ matrix.sample }})
     strategy:
       fail-fast: false
       matrix:
-        arch: [x86_64, aarch64]
+        arch: [aarch64]
         sample: [1, 2, 3, 4]
+        include:
+        - arch: x86_64
+          sample: 4
     runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     steps:
     - uses: actions/checkout@main

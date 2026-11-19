@@ -15,10 +15,10 @@ linux='linux-7.3'
 sqlite='sqlite-amalgamation-3460000'
 export BENCH=$work NAMES="${names[*]}"
 
-case $arch in
-    x86_64) karch=x86_64 ktarget=all ;;
-    aarch64) karch=arm64 ktarget=Image ;;
-esac
+# The kernel is one for x86_64 on either arch: the clang of 26.11-1 fails on
+# arm_neon.h in one for arm64, which the check of $neon below is for
+karch=x86_64
+neon=$'#undef __UINT64_TYPE__\n#define __UINT64_TYPE__ unsigned long long\n#include <arm_neon.h>'
 
 mkdir -p "$work"/{dl,tc,src/json/nlohmann,log,build}
 cd "$work"
@@ -35,6 +35,12 @@ for name in "${names[@]}"; do
     echo "$name: $(tc/"$name"/bin/clang --version | head -1), tarball sha256 $(sha256sum <dl/"$tar" | cut -c1-16)"
     # A clang that llvm-bolt went over has one more segment of code, aligned to 2 MiB
     tc/"$name"/bin/llvm-readelf -lW tc/"$name"/bin/clang | grep LOAD
+    # An arm64 kernel has uint64_t as unsigned long long where it includes arm_neon.h
+    if out=$(tc/"$name"/bin/clang --target=aarch64-linux-gnu -ffreestanding -fsyntax-only -x c - <<<"$neon" 2>&1); then
+        echo "$name: arm_neon.h is fine with the uint64_t of an arm64 kernel"
+    else
+        echo "$name: arm_neon.h fails with the uint64_t of an arm64 kernel: $(grep -m1 error: <<<"$out")"
+    fi
 done
 
 curl -fsSL -o dl/$linux.tar.xz https://cdn.kernel.org/pub/linux/kernel/v7.x/$linux.tar.xz
@@ -135,5 +141,5 @@ echo "::group::Smoke test"
 measure smoke 1 init/ 10
 echo "::endgroup::"
 
-measure result "${ROUNDS:-2}" "$ktarget" 1
+measure result "${ROUNDS:-2}" all 1
 echo "end $(date -Is)"

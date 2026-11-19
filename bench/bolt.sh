@@ -38,7 +38,7 @@ if [[ -n ${GITHUB_ACTIONS:-} ]]; then
 fi
 
 tar=toolchain-$release-$(uname -m).tar.xz
-curl -fsSL -o dl/"$tar" https://github.com/"${GITHUB_REPOSITORY:-usertam/toolchain}"/releases/download/"$release"/"$tar"
+curl -fsSL --retry 5 --retry-all-errors -o dl/"$tar" https://github.com/"${GITHUB_REPOSITORY:-usertam/toolchain}"/releases/download/"$release"/"$tar"
 tar -C release -xf dl/"$tar"
 echo "$release: tarball $(stat -c %s dl/"$tar") bytes, clang-24 $(stat -c %s release/bin/clang-24) bytes"
 ldd "$build"/bootstrap/bin/llvm-bolt || true

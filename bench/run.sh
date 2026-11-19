@@ -32,7 +32,7 @@ echo "transparent huge pages: $(cat /sys/kernel/mm/transparent_hugepage/enabled)
 for name in "${names[@]}"; do
     if [[ ! -d tc/$name ]]; then
         tar=toolchain-$name-$arch.tar.xz
-        curl -fsSL -o dl/"$tar" https://github.com/"${GITHUB_REPOSITORY:-usertam/toolchain}"/releases/download/"$name"/"$tar"
+        curl -fsSL --retry 5 --retry-all-errors -o dl/"$tar" https://github.com/"${GITHUB_REPOSITORY:-usertam/toolchain}"/releases/download/"$name"/"$tar"
         mkdir tc/"$name"
         tar -C tc/"$name" -xf dl/"$tar"
         echo "$name: tarball sha256 $(sha256sum <dl/"$tar" | cut -c1-16)"
@@ -48,9 +48,9 @@ for name in "${names[@]}"; do
     fi
 done
 
-curl -fsSL -o dl/$linux.tar.xz https://cdn.kernel.org/pub/linux/kernel/v7.x/$linux.tar.xz
-curl -fsSL -o dl/$sqlite.zip https://www.sqlite.org/2024/$sqlite.zip
-curl -fsSL -o src/json/nlohmann/json.hpp https://github.com/nlohmann/json/releases/download/v3.11.3/json.hpp
+curl -fsSL --retry 5 --retry-all-errors -o dl/$linux.tar.xz https://cdn.kernel.org/pub/linux/kernel/v7.x/$linux.tar.xz
+curl -fsSL --retry 5 --retry-all-errors -o dl/$sqlite.zip https://www.sqlite.org/2024/$sqlite.zip
+curl -fsSL --retry 5 --retry-all-errors -o src/json/nlohmann/json.hpp https://github.com/nlohmann/json/releases/download/v3.11.3/json.hpp
 sha256sum -c <<EOF
 87363c24f10e06321eb362765521094e94471f6bff8bce2d6b3e40f39f004953  dl/$linux.tar.xz
 712a7d09d2a22652fb06a49af516e051979a3984adb067da86760e60ed51a7f5  dl/$sqlite.zip

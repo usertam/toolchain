@@ -10,14 +10,15 @@ jobs:
   # TEST: build nothing. Run llvm-bolt over the clang of 26.11-2 again, from the
   # artifacts of the run in RESTORE_RUN that made it, in a way that leaves less
   # of the old code behind, and compare that with the way of the release, on
-  # four runners at once; bench/bolt.sh has the details.
+  # four runners at once; bench/bolt.sh has the details. All but this one are in
+  # run 44538723033, where this one failed to download the kernel source.
   bench:
     name: Compare BOLT variants (${{ matrix.variant }}, ${{ matrix.sample }})
     strategy:
       fail-fast: false
       matrix:
-        variant: [trap, full]
-        sample: [1, 2, 3, 4]
+        variant: [full]
+        sample: [2]
     runs-on: ubuntu-24.04
     env:
       RESTORE_RUN: 44339891822

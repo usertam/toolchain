@@ -1,28 +1,17 @@
-name: Build distribution
+name: Test distribution compression
 on:
   workflow_dispatch:
   push:
-  schedule:
-  - cron: '0 0 * * MON'
 permissions:
+  # Downloading the artifact of another run needs 'actions: read'
+  actions: read
   contents: read
 jobs:
-  # Pick one LLVM commit up front, so that every arch builds the same sources
-  setup:
-    name: Pick LLVM commit
-    runs-on: ubuntu-latest
-    outputs:
-      llvm-commit: ${{ steps.llvm.outputs.commit }}
-    steps:
-    - id: llvm
-      run: echo "commit=$(git ls-remote https://github.com/llvm/llvm-project.git refs/heads/main | cut -f1)" >> "$GITHUB_OUTPUT"
-
-  # Each LLVM stage is a job named after the stage it passes to '--actions-stage',
-  # continuing from the artifact of the job in RESTORE
-  bootstrap:
-    name: Build bootstrap LLVM (${{ matrix.arch }})
-    needs: setup
-    strategy: &matrix
+  # TEST: make nothing but the distribution, from the artifact of the BOLT stage
+  # of the run in RESTORE_RUN (branch test-main-size), and unpack it again.
+  dist:
+    name: Make distribution with binutils (${{ matrix.arch }})
+    strategy:
       fail-fast: false
       matrix:
         include:
@@ -32,109 +21,14 @@ jobs:
           runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     env:
-      LLVM_COMMIT: ${{ needs.setup.outputs.llvm-commit }}
-    steps: &stage
-    - uses: actions/checkout@main
-    - name: Free disk space
-      run: |
-        sudo rm -rf \
-          /usr/local/lib/android \
-          /usr/local/.ghcup /opt/ghc \
-          /usr/share/dotnet \
-          /usr/share/swift \
-          /opt/hostedtoolcache/CodeQL \
-          /usr/lib/jvm \
-          /usr/local/share/powershell \
-          "$AGENT_TOOLSDIRECTORY"
-        sudo docker system prune -af
-        df -h /
-    - name: Install dependencies
-      run: bash ci.sh deps
-    - name: Fetch LLVM
-      if: env.LLVM_COMMIT
-      run: bash ci.sh fetch "$LLVM_COMMIT"
-    - uses: actions/download-artifact@main
-      if: env.RESTORE
-      with:
-        name: ${{ env.RESTORE }}-${{ matrix.arch }}.tar.zst
-    - name: Unpack artifact
-      if: env.RESTORE
-      run: bash ci.sh unpack ${{ env.RESTORE }}-${{ matrix.arch }}.tar.zst
-    - name: Run stage
-      run: bash ci.sh llvm --actions-stage ${{ github.job }}
-    - name: Pack artifact
-      if: always()
-      run: bash ci.sh pack ${{ github.job }}-${{ matrix.arch }}.tar.zst
-    - uses: actions/upload-artifact@main
-      if: always()
-      with:
-        path: ${{ github.job }}-${{ matrix.arch }}.tar.zst
-        archive: false
-
-  ir-instrument:
-    name: Build IR instrumented LLVM (${{ matrix.arch }})
-    needs: bootstrap
-    strategy: *matrix
-    runs-on: ${{ matrix.runner }}
-    env:
-      RESTORE: bootstrap
-    steps: *stage
-
-  ir-profile:
-    name: Profile IR instrumented LLVM (${{ matrix.arch }})
-    needs: ir-instrument
-    strategy: *matrix
-    runs-on: ${{ matrix.runner }}
-    env:
-      RESTORE: ir-instrument
-    steps: *stage
-
-  cs-instrument:
-    name: Build CSIR instrumented LLVM (${{ matrix.arch }})
-    needs: ir-profile
-    strategy: *matrix
-    runs-on: ${{ matrix.runner }}
-    env:
-      RESTORE: ir-profile
-    steps: *stage
-
-  cs-profile:
-    name: Profile CSIR instrumented LLVM (${{ matrix.arch }})
-    needs: cs-instrument
-    strategy: *matrix
-    runs-on: ${{ matrix.runner }}
-    env:
-      RESTORE: cs-instrument
-    steps: *stage
-
-  final:
-    name: Build final LLVM (${{ matrix.arch }})
-    needs: cs-profile
-    strategy: *matrix
-    runs-on: ${{ matrix.runner }}
-    env:
-      RESTORE: cs-profile
-    steps: *stage
-
-  bolt:
-    name: Optimize final LLVM with BOLT (${{ matrix.arch }})
-    needs: final
-    strategy: *matrix
-    runs-on: ${{ matrix.runner }}
-    env:
-      RESTORE: final
-    steps: *stage
-
-  dist:
-    name: Make distribution with binutils (${{ matrix.arch }})
-    needs: bolt
-    strategy: *matrix
-    runs-on: ${{ matrix.runner }}
+      RESTORE_RUN: 44550343964
     steps:
     - uses: actions/checkout@main
     - uses: actions/download-artifact@main
       with:
         name: bolt-${{ matrix.arch }}.tar.zst
+        run-id: ${{ env.RESTORE_RUN }}
+        github-token: ${{ github.token }}
     - name: Install dependencies
       run: bash ci.sh deps
     - name: Unpack artifact
@@ -144,37 +38,21 @@ jobs:
     - name: Strip and patch toolchain
       run: bash ci.sh fixup
     - name: Make .tar.xz distribution
-      run: bash ci.sh dist
+      run: |
+        xz --version
+        time bash ci.sh dist
+    - name: Unpack distribution again
+      run: |
+        ls -l toolchain-*.tar.xz
+        xz -lvv toolchain-*.tar.xz | grep -E 'Blocks:|Memory needed|Minimum XZ|lzma2'
+        mkdir again
+        time tar -C again -xf toolchain-*.tar.xz
+        diff -r -x .gitignore install again && echo "unpacks to the same as install"
+        again/bin/clang --version
+        echo 'int main(void) { return 0; }' | again/bin/clang -x c -O2 -c - -o /dev/null && echo "clang compiles"
     - uses: actions/upload-artifact@main
       with:
         name: distribution-${{ matrix.arch }}
         path: |
           toolchain-*.tar.xz
           notes.md
-    - name: Pack artifact
-      if: failure()
-      run: bash ci.sh pack dist-${{ matrix.arch }}.tar.zst
-    - uses: actions/upload-artifact@main
-      if: failure()
-      with:
-        path: dist-${{ matrix.arch }}.tar.zst
-        archive: false
-
-  # Publish every arch in one release from one job, so they share its tag
-  release:
-    name: Publish release
-    needs: dist
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    concurrency: release
-    steps:
-    - uses: actions/checkout@main
-    - uses: actions/download-artifact@main
-      with:
-        pattern: distribution-*
-    - name: Publish release
-      run: bash ci.sh release
-      env:
-        GH_TOKEN: ${{ github.token }}

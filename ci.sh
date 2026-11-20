@@ -212,6 +212,7 @@ function do_release() {
     done
 
     gh release create "$tag" "${assets[@]}" \
+        --title "$tag" \
         --notes-file "${notes[0]}" \
         --target "$(git -C "$base" rev-parse HEAD)"
 }

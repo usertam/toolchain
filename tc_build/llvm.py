@@ -267,7 +267,6 @@ class LLVMBuilder(Builder):
             f"--reorder-functions={reorder_funcs_val}",
             '--split-all-cold',
             f"--split-functions{'=3' if use_sf_val else ''}",
-            '--use-gnu-stack',
             '--use-old-text',
             real_binary,
         ]

@@ -131,8 +131,20 @@ function do_fixup() {
     echo "Removing unused products..."
     rm -rf "$install"/include "$install"/lib/*.a "$install"/lib/*.la
 
+    # GNU strip before 2.44, which is what the host has, breaks a binary whose
+    # program header table llvm-bolt has moved, so strip with the llvm-strip
+    # that was just built. It replaces the file it strips, which leaves the
+    # other hard links of a binutils tool as they were, so link those again
     echo "Stripping remaining products..."
-    find "$install" -type f \( -executable -o -name '*.so*' \) -exec strip {} \;
+    find "$install" -type f \( -executable -o -name '*.so*' \) -printf '%i %p\0' | sort -zn |
+        while read -r -d '' inode bin; do
+            if [[ $inode = "${last:-}" ]]; then
+                ln -f "$stripped" "$bin"
+            else
+                "$install"/bin/llvm-strip "$bin"
+                last=$inode stripped=$bin
+            fi
+        done
 
     echo "Patching rpaths for portability..."
     find "$install" -mindepth 2 -maxdepth 3 -type f -print0 | while IFS= read -r -d '' bin; do

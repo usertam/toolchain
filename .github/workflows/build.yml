@@ -1,4 +1,4 @@
-name: Benchmark BOLT variants
+name: Benchmark the static toolchain
 on:
   workflow_dispatch:
   push:
@@ -7,63 +7,84 @@ permissions:
   actions: read
   contents: read
 jobs:
-  # TEST: build nothing. Run llvm-bolt over the clang of 26.11-2 again, from the
-  # artifacts of the run in RESTORE_RUN that made it, in a way that leaves less
-  # of the old code behind, and compare that with the way of the release, on
-  # four runners at once; bench/bolt.sh has the details. All but this one are in
-  # run 44538723033, where this one failed to download the kernel source.
+  # TEST: build nothing. Compare the static distribution that the run in
+  # STATIC_RUN made on branch test-static with release 26.11-5, which differs
+  # from it in how it is linked and in 22 commits of LLVM, on four runners per
+  # arch at once; bench/run.sh has the details.
   bench:
-    name: Compare BOLT variants (${{ matrix.variant }}, ${{ matrix.sample }})
+    name: Compare static with release (${{ matrix.arch }}, ${{ matrix.sample }})
     strategy:
       fail-fast: false
       matrix:
-        variant: [full]
-        sample: [2]
-    runs-on: ubuntu-24.04
+        arch: [x86_64, aarch64]
+        sample: [1, 2, 3, 4]
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     env:
-      RESTORE_RUN: 44339891822
+      STATIC_RUN: 45463826707
     steps:
     - uses: actions/checkout@main
-    - name: Free disk space
-      run: |
-        sudo rm -rf \
-          /usr/local/lib/android \
-          /usr/local/.ghcup /opt/ghc \
-          /usr/share/dotnet \
-          /usr/share/swift \
-          /opt/hostedtoolcache/CodeQL \
-          /usr/lib/jvm \
-          /usr/local/share/powershell \
-          "$AGENT_TOOLSDIRECTORY"
-        sudo docker system prune -af
-        df -h /
     - name: Install dependencies
       run: bash ci.sh deps
-    # The clang that llvm-bolt has not been over yet, and llvm-bolt
     - uses: actions/download-artifact@main
       with:
-        name: final-x86_64.tar.zst
-        run-id: ${{ env.RESTORE_RUN }}
+        name: distribution-${{ matrix.arch }}
+        path: dist
+        run-id: ${{ env.STATIC_RUN }}
         github-token: ${{ github.token }}
-    - name: Unpack clang and llvm-bolt
+    - name: Unpack the static distribution
       run: |
-        tar -I zstd -xf final-x86_64.tar.zst build/llvm/final/bin/clang-24 build/llvm/bootstrap/bin/llvm-bolt
-        rm final-x86_64.tar.zst
-    # The profile of the kernel build with the instrumented clang
-    - uses: actions/download-artifact@main
-      with:
-        name: bolt-x86_64.tar.zst
-        run-id: ${{ env.RESTORE_RUN }}
-        github-token: ${{ github.token }}
-    - name: Unpack profile
+        sha256sum dist/toolchain-${{ matrix.arch }}.tar.xz
+        mkdir -p bench-work/tc/static
+        tar -C bench-work/tc/static -xf dist/toolchain-${{ matrix.arch }}.tar.xz
+    # Its clang is made for hosts with glibc, like this one: see that it finds
+    # the headers, the startup files and the libraries of the host by itself
+    - name: Link and run programs with the static distribution
       run: |
-        tar -I zstd -xf bolt-x86_64.tar.zst build/llvm/final/clang.fdata
-        rm bolt-x86_64.tar.zst
-        ls -l build/llvm/final build/llvm/final/bin build/llvm/bootstrap/bin
+        t=$PWD/bench-work/tc/static/bin
+        file "$t"/clang-24 "$t"/lld "$t"/ld | cut -c1-160
+        "$t"/clang --version
+        cd "$(mktemp -d)"
+        printf '#include <stdio.h>\nint main(void) { puts("hello"); return 0; }\n' > hello.c
+        cat > throw.cpp <<'EOF'
+        #include <cstdio>
+        #include <stdexcept>
+        #include <thread>
+        #include <vector>
+        int main() {
+            std::vector<std::thread> threads;
+            int caught = 0;
+            for (int i = 0; i < 8; i++)
+                threads.emplace_back([&] {
+                    try {
+                        throw std::runtime_error("thrown");
+                    } catch (const std::exception &) {
+                        __atomic_add_fetch(&caught, 1, __ATOMIC_SEQ_CST);
+                    }
+                });
+            for (auto &thread : threads)
+                thread.join();
+            std::printf("caught %d of 8\n", caught);
+            return caught != 8;
+        }
+        EOF
+        # check <what> <compiler> <flags and source>: a failure is for the log,
+        # the benchmark runs all the same
+        check() {
+          if "$t/$2" -O2 "${@:3}" -o program && ./program; then
+            echo "$1: fine"
+          else
+            echo "::warning::$1: failed"
+          fi
+        }
+        check 'C, GNU ld' clang -fuse-ld=bfd hello.c
+        check 'C, lld' clang -fuse-ld=lld hello.c
+        check 'C++, GNU ld' clang++ -fuse-ld=bfd -pthread throw.cpp
+        check 'C++, lld' clang++ -fuse-ld=lld -pthread throw.cpp
+        check 'C++, lld, ThinLTO' clang++ -fuse-ld=lld -flto=thin -pthread throw.cpp
     - name: Benchmark
-      run: bash bench/bolt.sh ${{ matrix.variant }}
+      run: bash bench/run.sh 26.11-5 static
     - uses: actions/upload-artifact@main
       if: always()
       with:
-        name: bench-${{ matrix.variant }}-${{ matrix.sample }}
+        name: bench-${{ matrix.arch }}-${{ matrix.sample }}
         path: bench-work/log

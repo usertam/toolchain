@@ -8,18 +8,18 @@
 # The first round of this script (run 45542098097) read the cpu time of
 # provjobd around single workloads: it takes 1 to 9 ms for every run of a
 # static LLVM tool, even one that only says its version, and about 7% of the
-# cpu time of a compile on top, with one job as with four, and whatever the
-# huge pages and the purging of the tool's mimalloc are set to. It takes
-# nothing for the static binutils, which have the malloc of musl, for small or
-# large static programs, or for 300000 calls of mmap, madvise, mprotect, open
-# or fcntl in a row. And it takes the same 7% with the release during a
-# compile that takes 20 s and much memory.
+# cpu time of a compile on top, whatever the huge pages and the purging of the
+# tool's mimalloc are set to, and nothing for the static binutils, which have
+# the malloc of musl. The second (run 45544235316) found the arena: mimalloc
+# maps 1 GiB as its first one, and with 64 MiB at a time, or without arenas,
+# provjobd keeps as quiet as with the release, and the static toolchain is 6%
+# to 11% faster than the release where it was level. The clang of the release
+# with a mimalloc loaded into it keeps provjobd as busy as the static one. A
+# program that only maps 1 GiB and computes does not.
 #
-# So is it the address space? mimalloc maps 1 GiB as its first arena, however
-# little of it gets used. This round: a program that maps memory and then
-# computes, the static clang with a small arena, and part of the kernel of
-# idle.sh with the arenas of the static clang set otherwise, and with the
-# mimalloc of the distribution loaded into the clang of the release.
+# This round: from what size of the arena on, and whether a program that
+# writes to a large mapping and gives parts of it back, as mimalloc does, is
+# enough.
 
 set -euo pipefail
 
@@ -83,50 +83,26 @@ cd trigger
 printf 'int main(void) { return 0; }\n' >small.c
 gcc -O2 -Wall -o spin "$base"/spin.c
 
-# 64 MiB at a time in place of 1 GiB
-small_arena='MIMALLOC_ARENA_RESERVE=64MiB'
-echo "the mimalloc of ${names[1]} with $small_arena:"
-env MIMALLOC_VERBOSE=1 "$small_arena" "$static"/clang --version 2>&1 | grep -E 'arena_reserve|arena_eager_commit|disallow_arena_alloc|allow_thp' || true
+sizes=(64MiB 128MiB 256MiB 512MiB 1GiB)
 
-echo "== a program that maps memory and takes 10 s of cpu time: MiB mapped, MiB of them written to"
-probe spin-0-0 1 ./spin 10 0 0
-for mapped in 128 1024 16384; do
-    probe "spin-$mapped-0" 1 ./spin 10 "$mapped" 0
+echo "== a program that maps memory, writes to 4 MiB of it and ends, 500 times: MiB mapped"
+for mapped in 64 1024; do
+    probe "touch-$mapped" 500 ./spin 0 "$mapped" 4
 done
-probe spin-1024-0-without-access 1 ./spin 10 1024 0 none
-probe spin-1024-512 1 ./spin 10 1024 512
-probe spin-512-512 1 ./spin 10 512 512
 
-echo "== the same without the 10 s, 500 times each"
-probe map-0 500 ./spin 0 0 0
-probe map-1024 500 ./spin 0 1024 0
+echo "== one that takes 10 s of cpu time and keeps giving back and writing to 32 MiB: MiB mapped"
+for mapped in 64 1024; do
+    probe "churn-$mapped" 1 ./spin 10 "$mapped" 32 churn
+done
 
-echo "== clang of ${names[1]}, 500 times each: its version, a short compile"
-probe version 500 "$static"/clang --version
-probe version-small-arena 500 env "$small_arena" "$static"/clang --version
-probe short 500 "$static"/clang -O2 -c -o small.o small.c
-probe short-small-arena 500 env "$small_arena" "$static"/clang -O2 -c -o small.o small.c
+echo "== clang of ${names[1]}, a short compile 500 times: the size of an arena"
+for size in "${sizes[@]}"; do
+    probe "short-$size" 500 env MIMALLOC_ARENA_RESERVE="$size" "$static"/clang -O2 -c -o small.o small.c
+done
 
 echo "== kernel/ and mm/ of the kernel of idle.sh"
 kernel "${names[0]}" "$release"
-kernel "${names[1]}" "$static"
-kernel "${names[1]}-small-arena" "$static" "$small_arena"
-kernel "${names[1]}-arena-not-committed" "$static" MIMALLOC_ARENA_EAGER_COMMIT=0
-kernel "${names[1]}-no-arena" "$static" MIMALLOC_DISALLOW_ARENA_ALLOC=1
-
-# The release with a mimalloc in its clang, where the distribution has one
-sudo apt-get install -y libmimalloc2.0 >/dev/null 2>&1 || true
-lib=$(dpkg -L libmimalloc2.0 2>/dev/null | grep -m1 '/libmimalloc\.so\.[0-9.]*$' || true)
-if [[ -n $lib ]]; then
-    mkdir -p "$work"/preload
-    ln -sf "$release"/* "$work"/preload/
-    rm "$work"/preload/clang
-    printf '#!/bin/sh\nLD_PRELOAD=%s exec %s "$@"\n' "$lib" "$release"/clang >"$work"/preload/clang
-    chmod +x "$work"/preload/clang
-    echo "$lib in the clang of ${names[0]}:"
-    env MIMALLOC_VERBOSE=1 "$work"/preload/clang --version 2>&1 | grep -E 'mimalloc: (v|option .arena_reserve)|clang version' || true
-    kernel "${names[0]}-mimalloc" "$work"/preload
-else
-    echo "== no mimalloc to load here"
-fi
+for size in "${sizes[@]}"; do
+    kernel "${names[1]}-$size" "$static" MIMALLOC_ARENA_RESERVE="$size"
+done
 echo "end $(date -Is)"

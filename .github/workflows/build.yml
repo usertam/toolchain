@@ -21,6 +21,10 @@ jobs:
     runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     env:
       STATIC_RUN: 45463826707
+      # The mimalloc of the static clang asks for transparent huge pages, the
+      # malloc of the release does not: this run is without them. The release
+      # has no mimalloc, so the variable changes nothing for it.
+      MIMALLOC_ALLOW_THP: 0
     steps:
     - uses: actions/checkout@main
     - name: Install dependencies

@@ -3,11 +3,23 @@
 # a kernel build with the static toolchain takes less cpu time than with the
 # release and yet as long or longer, as provjobd, a process of the runner, takes
 # two cpu-minutes of the four cpus meanwhile, against two seconds with the
-# release (idle.sh). Run tools of $1 and $2 and some small programs, one at a
-# time, so that a cpu is free for provjobd, and let probe.py say how much cpu
-# time it took for each: is it what is run, how often, or what it does. Then
-# part of the kernel of idle.sh, where it is known to be busy, with the
-# allocator of $2 set otherwise and with one job.
+# release (idle.sh).
+#
+# The first round of this script (run 45542098097) read the cpu time of
+# provjobd around single workloads: it takes 1 to 9 ms for every run of a
+# static LLVM tool, even one that only says its version, and about 7% of the
+# cpu time of a compile on top, with one job as with four, and whatever the
+# huge pages and the purging of the tool's mimalloc are set to. It takes
+# nothing for the static binutils, which have the malloc of musl, for small or
+# large static programs, or for 300000 calls of mmap, madvise, mprotect, open
+# or fcntl in a row. And it takes the same 7% with the release during a
+# compile that takes 20 s and much memory.
+#
+# So is it the address space? mimalloc maps 1 GiB as its first arena, however
+# little of it gets used. This round: a program that maps memory and then
+# computes, the static clang with a small arena, and part of the kernel of
+# idle.sh with the arenas of the static clang set otherwise, and with the
+# mimalloc of the distribution loaded into the clang of the release.
 
 set -euo pipefail
 
@@ -17,7 +29,7 @@ names=("$1" "$2")
 arch=$(uname -m)
 linux='linux-7.3'
 
-mkdir -p "$work"/{dl,tc,src,log,build,trigger}
+mkdir -p "$work"/{dl,tc,src,build,trigger}
 cd "$work"
 
 echo "machine: $arch, $(nproc) cpus, $(lscpu | sed -n 's/^Model name: *//p' | head -1), linux $(uname -r), root on $(findmnt -no SOURCE /)"
@@ -30,6 +42,8 @@ for name in "${names[@]}"; do
     fi
     echo "$name: $(tc/"$name"/bin/clang --version | head -1)"
 done
+release=$work/tc/${names[0]}/bin
+static=$work/tc/${names[1]}/bin
 
 if [[ ! -d src/$linux ]]; then
     curl -fsSL --retry 5 --retry-all-errors -o dl/$linux.tar.xz https://cdn.kernel.org/pub/linux/kernel/v7.x/$linux.tar.xz
@@ -53,64 +67,66 @@ function probe() {
 }
 
 function kernel() {
-    # kernel <label> <name> <jobs> <variables for the tools>...
-    local t=$work/tc/$2/bin out=$work/build/linux
+    # kernel <label> <directory of the tools> <variables for the tools>...
+    local t=$2 out=$work/build/linux
     local vars=(-C "$work/src/$linux" -s ARCH=x86_64 KCFLAGS=-Wno-error O="$out"
         CC="$t/clang" LD="$t/ld.lld" AR="$t/llvm-ar" NM="$t/llvm-nm" OBJCOPY="$t/llvm-objcopy"
         OBJDUMP="$t/llvm-objdump" READELF="$t/llvm-readelf" STRIP="$t/llvm-strip")
     rm -rf "$out"
     make "${vars[@]}" defconfig >/dev/null
     make "${vars[@]}" -j"$(nproc)" prepare >/dev/null 2>&1
-    probe "$1" 1 env "${@:4}" make "${vars[@]}" -j"$3" kernel/ mm/
+    probe "$1" 1 env "${@:3}" make "${vars[@]}" -j"$(nproc)" kernel/ mm/
     echo "  $(find "$out"/kernel "$out"/mm -name '*.o' | wc -l) objects"
 }
 
 cd trigger
 printf 'int main(void) { return 0; }\n' >small.c
-printf 'const char pad[128 << 20] = {1};\nint main(int argc, char **argv) { return pad[argc]; }\n' >large.c
-gcc -O2 -o small small.c
-gcc -O2 -static -o small-static small.c
-gcc -O2 -static-pie -o small-static-pie small.c
-gcc -O2 -o large large.c
-gcc -O2 -static -o large-static large.c
-gcc -O2 -Wall -o calls "$base"/calls.c
-# A source that takes a compiler some seconds
-for i in $(seq 12000); do
-    echo "int f$i(int n, int *p) { for (int i = 0; i < n; i++) p[i] += n * $i; return p[n / 2] + $i; }"
-done >long.c
-stat -c '%s bytes: %n' small small-static small-static-pie large large-static
+gcc -O2 -Wall -o spin "$base"/spin.c
 
-echo "== nothing but a sleep"
-probe sleep 1 sleep 20
+# 64 MiB at a time in place of 1 GiB
+small_arena='MIMALLOC_ARENA_RESERVE=64MiB'
+echo "the mimalloc of ${names[1]} with $small_arena:"
+env MIMALLOC_VERBOSE=1 "$small_arena" "$static"/clang --version 2>&1 | grep -E 'arena_reserve|arena_eager_commit|disallow_arena_alloc|allow_thp' || true
 
-echo "== programs that do nothing, 500 times each"
-for program in small small-static small-static-pie large large-static; do
-    probe "$program" 500 ./"$program"
+echo "== a program that maps memory and takes 10 s of cpu time: MiB mapped, MiB of them written to"
+probe spin-0-0 1 ./spin 10 0 0
+for mapped in 128 1024 16384; do
+    probe "spin-$mapped-0" 1 ./spin 10 "$mapped" 0
 done
+probe spin-1024-0-without-access 1 ./spin 10 1024 0 none
+probe spin-1024-512 1 ./spin 10 1024 512
+probe spin-512-512 1 ./spin 10 512 512
 
-echo "== tools that say their version, 500 times each"
-for name in "${names[@]}"; do
-    for tool in clang ld.lld llvm-ar ld; do
-        echo "$(stat -Lc %s "$work/tc/$name/bin/$tool") bytes, $(file -bL "$work/tc/$name/bin/$tool" | cut -d, -f1-2,4 | cut -c1-90)"
-        probe "$name-$tool" 500 "$work/tc/$name/bin/$tool" --version
-    done
-done
+echo "== the same without the 10 s, 500 times each"
+probe map-0 500 ./spin 0 0 0
+probe map-1024 500 ./spin 0 1024 0
 
-echo "== compiles: one that takes long twice, a short one 500 times"
-for name in "${names[@]}"; do
-    probe "$name-long" 2 "$work/tc/$name/bin/clang" -O2 -c -o long.o long.c
-    probe "$name-short" 500 "$work/tc/$name/bin/clang" -O2 -c -o small.o small.c
-done
-
-echo "== system calls, 300000 of a kind"
-for call in mmap madvise mprotect open fcntl; do
-    probe "$call" 1 ./calls "$call" 300000
-done
+echo "== clang of ${names[1]}, 500 times each: its version, a short compile"
+probe version 500 "$static"/clang --version
+probe version-small-arena 500 env "$small_arena" "$static"/clang --version
+probe short 500 "$static"/clang -O2 -c -o small.o small.c
+probe short-small-arena 500 env "$small_arena" "$static"/clang -O2 -c -o small.o small.c
 
 echo "== kernel/ and mm/ of the kernel of idle.sh"
-kernel "${names[0]}" "${names[0]}" "$(nproc)"
-kernel "${names[1]}" "${names[1]}" "$(nproc)"
-kernel "${names[1]}-no-purge" "${names[1]}" "$(nproc)" MIMALLOC_PURGE_DELAY=-1
-kernel "${names[1]}-huge-pages" "${names[1]}" "$(nproc)" MIMALLOC_ALLOW_THP=1
-kernel "${names[1]}-one-job" "${names[1]}" 1
+kernel "${names[0]}" "$release"
+kernel "${names[1]}" "$static"
+kernel "${names[1]}-small-arena" "$static" "$small_arena"
+kernel "${names[1]}-arena-not-committed" "$static" MIMALLOC_ARENA_EAGER_COMMIT=0
+kernel "${names[1]}-no-arena" "$static" MIMALLOC_DISALLOW_ARENA_ALLOC=1
+
+# The release with a mimalloc in its clang, where the distribution has one
+sudo apt-get install -y libmimalloc2.0 >/dev/null 2>&1 || true
+lib=$(dpkg -L libmimalloc2.0 2>/dev/null | grep -m1 '/libmimalloc\.so\.[0-9.]*$' || true)
+if [[ -n $lib ]]; then
+    mkdir -p "$work"/preload
+    ln -sf "$release"/* "$work"/preload/
+    rm "$work"/preload/clang
+    printf '#!/bin/sh\nLD_PRELOAD=%s exec %s "$@"\n' "$lib" "$release"/clang >"$work"/preload/clang
+    chmod +x "$work"/preload/clang
+    echo "$lib in the clang of ${names[0]}:"
+    env MIMALLOC_VERBOSE=1 "$work"/preload/clang --version 2>&1 | grep -E 'mimalloc: (v|option .arena_reserve)|clang version' || true
+    kernel "${names[0]}-mimalloc" "$work"/preload
+else
+    echo "== no mimalloc to load here"
+fi
 echo "end $(date -Is)"

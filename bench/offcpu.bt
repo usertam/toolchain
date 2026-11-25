@@ -1,0 +1,61 @@
+// TEST: the time the tools of a kernel build are off the cpus, for idle.sh, in
+// ns: @blocked by the kernel stack they went to sleep with, @runnable when they
+// only waited for a cpu. The shells and makes wait for their children most of
+// the time, so their stacks are of use only where the two toolchains differ.
+// @oncpu is the time everything was on a cpu, by name; swapper is the idle one.
+BEGIN
+{
+    printf("attached\n");
+}
+
+tracepoint:sched:sched_switch
+{
+    if (@on[cpu]) {
+        @oncpu[args->prev_comm] = sum(nsecs - @on[cpu]);
+    }
+    @on[cpu] = nsecs;
+    if (@off[args->next_pid]) {
+        $ns = nsecs - @off[args->next_pid];
+        if (@asleep[args->next_pid]) {
+            if (args->next_comm == "make" || args->next_comm == "sh") {
+                @parents[args->next_comm, @stack[args->next_pid]] = sum($ns);
+            } else {
+                @blocked[args->next_comm, @stack[args->next_pid]] = sum($ns);
+                @blocked_all[args->next_comm] = sum($ns);
+            }
+        } else {
+            @runnable[args->next_comm] = sum($ns);
+        }
+        delete(@off[args->next_pid]);
+        delete(@asleep[args->next_pid]);
+        delete(@stack[args->next_pid]);
+    }
+    // 0x10 and 0x20 are a task that is gone for good; 0 and 0x100 one that could go on
+    $state = args->prev_state;
+    if (($state & 0x30) == 0 &&
+        (args->prev_comm == "clang" || args->prev_comm == "ld.lld" || args->prev_comm == "llvm-ar" ||
+         args->prev_comm == "llvm-nm" || args->prev_comm == "llvm-objcopy" || args->prev_comm == "objtool" ||
+         args->prev_comm == "fixdep" || args->prev_comm == "make" || args->prev_comm == "sh")) {
+        @off[args->prev_pid] = nsecs;
+        @asleep[args->prev_pid] = $state != 0 && $state != 0x100;
+        @stack[args->prev_pid] = kstack(12);
+    }
+}
+
+END
+{
+    print(@oncpu, 40);
+    print(@blocked_all);
+    print(@runnable);
+    print(@blocked, 30);
+    print(@parents, 8);
+    clear(@oncpu);
+    clear(@on);
+    clear(@blocked_all);
+    clear(@runnable);
+    clear(@blocked);
+    clear(@parents);
+    clear(@off);
+    clear(@asleep);
+    clear(@stack);
+}

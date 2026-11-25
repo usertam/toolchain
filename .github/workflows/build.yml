@@ -7,23 +7,25 @@ permissions:
   actions: read
   contents: read
 jobs:
-  # TEST: build nothing. Compare the static distribution that the run in
-  # STATIC_RUN made on branch test-static with release 26.11-5, which differs
-  # from it in how it is linked and in 22 commits of LLVM, on four runners per
-  # arch at once; bench/run.sh has the details.
+  # TEST: build nothing. Take the static distribution that the run in
+  # STATIC_RUN made on branch test-static and release 26.11-5, which differs
+  # from it in how it is linked and in 22 commits of LLVM, and see where the
+  # kernel build with the static one leaves the cpus idle, on two runners per
+  # arch; bench/idle.sh has the details.
   bench:
-    name: Compare static with release (${{ matrix.arch }}, ${{ matrix.sample }})
+    name: Idle time of static and release (${{ matrix.arch }}, ${{ matrix.sample }})
     strategy:
       fail-fast: false
       matrix:
         arch: [x86_64, aarch64]
-        sample: [1, 2, 3, 4]
+        sample: [1, 2]
     runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     env:
       STATIC_RUN: 45463826707
       # The mimalloc of the static clang asks for transparent huge pages, the
-      # malloc of the release does not: this run is without them. The release
-      # has no mimalloc, so the variable changes nothing for it.
+      # malloc of the release does not: this run is without them, as the cpus
+      # are idle with and without. The release has no mimalloc, so the variable
+      # changes nothing for it.
       MIMALLOC_ALLOW_THP: 0
     steps:
     - uses: actions/checkout@main
@@ -85,8 +87,8 @@ jobs:
         check 'C++, GNU ld' clang++ -fuse-ld=bfd -pthread throw.cpp
         check 'C++, lld' clang++ -fuse-ld=lld -pthread throw.cpp
         check 'C++, lld, ThinLTO' clang++ -fuse-ld=lld -flto=thin -pthread throw.cpp
-    - name: Benchmark
-      run: bash bench/run.sh 26.11-5 static
+    - name: Kernel builds
+      run: bash bench/idle.sh 26.11-5 static
     - uses: actions/upload-artifact@main
       if: always()
       with:

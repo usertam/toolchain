@@ -162,6 +162,15 @@ class LLVMBuilder(Builder):
                 inst_binary,
                 real_binary,
             ]
+            # A static binary cannot write its profile as it exits. With a
+            # sleep time, a process that it forks writes one every so many
+            # seconds, which a day never gets to, and with the counters kept,
+            # a last one once the binary has exited
+            if self.static_is_enabled():
+                clang_inst_cmd += [
+                    '--instrumentation-sleep-time=86400',
+                    '--instrumentation-no-counters-clear',
+                ]
             # When running an instrumented binary on certain platforms (namely
             # Apple Silicon), there may be hangs due to instrumentation in
             # between exclusive load and store instructions:
@@ -183,6 +192,16 @@ class LLVMBuilder(Builder):
                 # This option changes CC when building Linux, which is only
                 # needed when just clang is instrumented.
                 self.bolt_builder.bolt_instrumentation = True
+
+                # The process that a static binary forks holds the output of
+                # the binary open until the binary has been waited for. Make,
+                # Kconfig and sh read all that a compiler prints before they
+                # wait for it, which would never end, so have them run a
+                # script, which waits for the binary as soon as it exits.
+                if self.static_is_enabled():
+                    inst_wrapped = inst_binary.replace(f"{inst_binary}.bin")
+                    inst_binary.write_text(f'#!/bin/sh\n"{inst_wrapped}" "$@"\n', encoding='utf-8')
+                    inst_binary.chmod(0o755)
 
         if mode == 'sampling':
             self.bolt_builder.bolt_sampling_output = Path(self.folders.build, 'perf.data')
@@ -220,7 +239,10 @@ class LLVMBuilder(Builder):
                 orig_binary.replace(real_binary)  # mv llvm.orig llvm
 
             # Merge the profiles written since the last merge of the build, or
-            # all that are left if merging failed along the way
+            # all that are left if merging failed along the way, once the
+            # processes that write those of the last static binaries are done
+            if self.static_is_enabled():
+                time.sleep(10)
             self.merge_bolt_profiles(bolt_profile)
 
         if mode == 'sampling':
@@ -273,7 +295,9 @@ class LLVMBuilder(Builder):
         self.run_cmd(clang_opt_cmd)
         bolt_binary.replace(real_binary)
         if mode == 'instrumentation':
-            inst_binary.unlink()
+            # The instrumented binary, and the script that ran it if it had one
+            for inst_file in inst_binary.parent.glob(f"{inst_binary.name}*"):
+                inst_file.unlink()
 
     def build(self) -> None:
         if not tc_build.utils.path_is_set(self.folders.build):
@@ -460,7 +484,7 @@ class LLVMBuilder(Builder):
             default_target_triple = subprocess.run(
                 ['clang', '-print-target-triple'], capture_output=True, check=True, text=True
             ).stdout.strip()
-            self.cmake_defines['LLVM_DEFAULT_TARGET_TRIPLE'] = default_target_triple
+            self.cmake_defines.setdefault('LLVM_DEFAULT_TARGET_TRIPLE', default_target_triple)
 
         self.handle_distribution_profile()
 
@@ -552,7 +576,8 @@ class LLVMBuilder(Builder):
                     for item in self.llvm_driver_binaries('clang')
                     if item not in distribution_components
                 ]
-            if self.distribution_profile in {'kernel', 'rust'}:
+            # A static build has no shared libraries
+            if self.distribution_profile in {'kernel', 'rust'} and not self.static_is_enabled():
                 distribution_components.append('libclang')
                 # With LLVM_LINK_LLVM_DYLIB=ON, omitting this results in:
                 #
@@ -741,6 +766,9 @@ class LLVMBuilder(Builder):
                 print()
         tc_build.utils.flush_std_err_out()
 
+    def static_is_enabled(self) -> bool:
+        return self.cmake_defines.get('LLVM_BUILD_STATIC', 'OFF') == 'ON'
+
     def validate_targets(self) -> None:
         if not tc_build.utils.path_is_set(self.folders.source):
             msg = 'No source folder set?'
@@ -855,7 +883,8 @@ class LLVMInstrumentedBuilder(LLVMBuilder):
         self.cmake_defines['LLVM_BUILD_RUNTIME'] = 'OFF'
 
     def configure(self):
-        no_multicall = not self.multicall_is_enabled()
+        # Neither a multicall nor a static build can link against the dylib
+        link_dylib = not self.multicall_is_enabled() and not self.static_is_enabled()
         # The following defines are needed to avoid thousands of warnings
         # along the lines of:
         # "Unable to track new values: Running out of static counters."
@@ -864,7 +893,7 @@ class LLVMInstrumentedBuilder(LLVMBuilder):
         # to use CMAKE_C{,XX}_FLAGS.
         cmake_options = Path(self.folders.source, 'llvm/cmake/modules/HandleLLVMOptions.cmake')
         cmake_text = cmake_options.read_text(encoding='utf-8')
-        if no_multicall and 'LLVM_VP_COUNTERS_PER_SITE' in cmake_text:
+        if link_dylib and 'LLVM_VP_COUNTERS_PER_SITE' in cmake_text:
             self.cmake_defines['LLVM_VP_COUNTERS_PER_SITE'] = '6'
         else:
             cflags = []
@@ -891,7 +920,7 @@ class LLVMInstrumentedBuilder(LLVMBuilder):
         # https://github.com/llvm/llvm-project/pull/133596
         # But that should not matter much in this case because multicall uses
         # much less disk space.
-        if no_multicall:
+        if link_dylib:
             self.cmake_defines['LLVM_LINK_LLVM_DYLIB'] = 'ON'
 
         super().configure()

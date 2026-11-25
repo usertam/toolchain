@@ -913,6 +913,10 @@ if args.pgo:
 final.build_targets = args.build_targets
 final.check_targets = args.check_targets
 final.cmake_defines.update(common_cmake_defines)
+# A static toolchain is built against musl for hosts that have glibc, where
+# clang would otherwise default to the libc of the build host
+if final.static_is_enabled():
+    final.cmake_defines['LLVM_DEFAULT_TARGET_TRIPLE'] = f"{platform.machine()}-unknown-linux-gnu"
 if args.distribution_profile:
     final.distribution_profile = args.distribution_profile
 final.folders.build = Path(build_folder, 'final')

@@ -34,6 +34,7 @@ class BinutilsBuilder(Builder):
         }
         self.extra_targets: list[str] = []
         self.native_arch: str = ''
+        self.static: bool = False
         self.target: str = ''
 
     def build(self) -> None:
@@ -50,6 +51,14 @@ class BinutilsBuilder(Builder):
         self.configure_vars['CFLAGS'] = ' '.join(self.cflags)
         self.configure_vars['CXXFLAGS'] = ' '.join(self.cflags)
 
+        ldflags = []
+        if self.static:
+            # A static tool cannot load a plugin. libtool keeps '-static' to
+            # itself, and passes this spelling on
+            self.configure_flags.remove('--enable-plugins')
+            self.configure_flags.append('--disable-plugins')
+            ldflags.append('--static')
+
         # Avoid "input SFrame sections with different format versions prevent
         # .sframe generation" error by discarding .sframe altogether if
         # possible, as we may be linking against libraries with their own
@@ -58,7 +67,9 @@ class BinutilsBuilder(Builder):
             ['ld', '--help'], capture_output=True, check=True, text=True
         ).stdout
         if '--discard-sframe' in ld_help:
-            self.configure_vars['LDFLAGS'] = '-Wl,--discard-sframe'
+            ldflags.append('-Wl,--discard-sframe')
+        if ldflags:
+            self.configure_vars['LDFLAGS'] = ' '.join(ldflags)
 
         self.clean_build_folder()
         self.folders.build.mkdir(exist_ok=True, parents=True)

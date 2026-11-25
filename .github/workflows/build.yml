@@ -9,11 +9,11 @@ permissions:
 jobs:
   # TEST: build nothing. Take the static distribution that the run in
   # STATIC_RUN made on branch test-static and release 26.11-5, which differs
-  # from it in how it is linked and in 22 commits of LLVM, and see where the
-  # kernel build with the static one leaves the cpus idle, on two runners per
-  # arch; bench/idle.sh has the details.
+  # from it in how it is linked and in 22 commits of LLVM, and see what of the
+  # static one keeps provjobd of the runner busy, on two runners per arch;
+  # bench/trigger.sh has the details.
   bench:
-    name: Idle time of static and release (${{ matrix.arch }}, ${{ matrix.sample }})
+    name: What keeps provjobd busy (${{ matrix.arch }}, ${{ matrix.sample }})
     strategy:
       fail-fast: false
       matrix:
@@ -23,9 +23,9 @@ jobs:
     env:
       STATIC_RUN: 45463826707
       # The mimalloc of the static clang asks for transparent huge pages, the
-      # malloc of the release does not: this run is without them, as the cpus
-      # are idle with and without. The release has no mimalloc, so the variable
-      # changes nothing for it.
+      # malloc of the release does not: this run is without them, like the
+      # kernel builds of bench/idle.sh that it looks into. The release has no
+      # mimalloc, so the variable changes nothing for it.
       MIMALLOC_ALLOW_THP: 0
     steps:
     - uses: actions/checkout@main
@@ -87,10 +87,5 @@ jobs:
         check 'C++, GNU ld' clang++ -fuse-ld=bfd -pthread throw.cpp
         check 'C++, lld' clang++ -fuse-ld=lld -pthread throw.cpp
         check 'C++, lld, ThinLTO' clang++ -fuse-ld=lld -flto=thin -pthread throw.cpp
-    - name: Kernel builds
-      run: bash bench/idle.sh 26.11-5 static
-    - uses: actions/upload-artifact@main
-      if: always()
-      with:
-        name: bench-${{ matrix.arch }}-${{ matrix.sample }}
-        path: bench-work/log
+    - name: What keeps provjobd busy
+      run: bash bench/trigger.sh 26.11-5 static

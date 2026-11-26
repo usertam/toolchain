@@ -162,6 +162,15 @@ class LLVMBuilder(Builder):
                 inst_binary,
                 real_binary,
             ]
+            # A static binary cannot write its profile as it exits. With a
+            # sleep time, a process that it forks writes one every so many
+            # seconds, which a day never gets to, and with the counters kept,
+            # a last one once the binary has exited
+            if self.static_is_enabled():
+                clang_inst_cmd += [
+                    '--instrumentation-sleep-time=86400',
+                    '--instrumentation-no-counters-clear',
+                ]
             # When running an instrumented binary on certain platforms (namely
             # Apple Silicon), there may be hangs due to instrumentation in
             # between exclusive load and store instructions:
@@ -183,6 +192,16 @@ class LLVMBuilder(Builder):
                 # This option changes CC when building Linux, which is only
                 # needed when just clang is instrumented.
                 self.bolt_builder.bolt_instrumentation = True
+
+                # The process that a static binary forks holds the output of
+                # the binary open until the binary has been waited for. Make,
+                # Kconfig and sh read all that a compiler prints before they
+                # wait for it, which would never end, so have them run a
+                # script, which waits for the binary as soon as it exits.
+                if self.static_is_enabled():
+                    inst_wrapped = inst_binary.replace(f"{inst_binary}.bin")
+                    inst_binary.write_text(f'#!/bin/sh\n"{inst_wrapped}" "$@"\n', encoding='utf-8')
+                    inst_binary.chmod(0o755)
 
         if mode == 'sampling':
             self.bolt_builder.bolt_sampling_output = Path(self.folders.build, 'perf.data')
@@ -220,7 +239,10 @@ class LLVMBuilder(Builder):
                 orig_binary.replace(real_binary)  # mv llvm.orig llvm
 
             # Merge the profiles written since the last merge of the build, or
-            # all that are left if merging failed along the way
+            # all that are left if merging failed along the way, once the
+            # processes that write those of the last static binaries are done
+            if self.static_is_enabled():
+                time.sleep(10)
             self.merge_bolt_profiles(bolt_profile)
 
         if mode == 'sampling':
@@ -273,7 +295,9 @@ class LLVMBuilder(Builder):
         self.run_cmd(clang_opt_cmd)
         bolt_binary.replace(real_binary)
         if mode == 'instrumentation':
-            inst_binary.unlink()
+            # The instrumented binary, and the script that ran it if it had one
+            for inst_file in inst_binary.parent.glob(f"{inst_binary.name}*"):
+                inst_file.unlink()
 
     def build(self) -> None:
         if not tc_build.utils.path_is_set(self.folders.build):

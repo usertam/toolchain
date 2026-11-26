@@ -5,7 +5,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from tempfile import NamedTemporaryFile
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from typing import TypedDict
 
 import tc_build.utils
@@ -163,7 +163,14 @@ class KernelBuilder(Builder):
         return self.toolchain_version
 
     def can_use_clang_as_hostcc(self) -> bool:
-        return self._test_clang('-c')
+        # clang may also default to a libc that this host does not have, in
+        # which case what it builds for the host does not run
+        with TemporaryDirectory() as tmpdir:
+            prog = Path(tmpdir, 'prog')
+            try:
+                return self._test_clang(['-o', prog]) and not subprocess.call([prog])
+            except OSError:
+                return False
 
     def _test_clang(self, args: str | list | None = None) -> bool:
         clang = Path(self.toolchain_prefix, 'bin/clang')

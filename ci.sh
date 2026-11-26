@@ -300,7 +300,8 @@ Built against the tip of llvm-project at commit [\`${commit:0:7}\`](https://gith
 EOF
 }
 
-# Publish the distributions of every arch, downloaded into distribution-<arch>
+# Publish the distributions of every arch, dynamic and static, downloaded into
+# distribution-<arch>-<link>
 function do_release() {
     local asset assets=() month note notes rel tag
     month=$(date +%y.%m)

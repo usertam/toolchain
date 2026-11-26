@@ -7,7 +7,7 @@ on:
 permissions:
   contents: read
 jobs:
-  # Pick one LLVM commit up front, so that every arch builds the same sources
+  # Pick one LLVM commit up front, so that every job builds the same sources
   setup:
     name: Pick LLVM commit
     runs-on: ubuntu-latest
@@ -18,13 +18,16 @@ jobs:
       run: echo "commit=$(git ls-remote https://github.com/llvm/llvm-project.git refs/heads/main | cut -f1)" >> "$GITHUB_OUTPUT"
 
   # Each LLVM stage is a job named after the stage it passes to '--actions-stage',
-  # continuing from the artifact of the job in RESTORE
+  # continuing from the artifact of the job in RESTORE. Every arch is built
+  # twice: linked dynamically against glibc, and statically against musl (LINK)
   bootstrap:
-    name: Build bootstrap LLVM (${{ matrix.arch }})
+    name: Build bootstrap LLVM (${{ matrix.arch }}, ${{ matrix.link }})
     needs: setup
     strategy: &matrix
       fail-fast: false
       matrix:
+        arch: [x86_64, aarch64]
+        link: [dynamic, static]
         include:
         - arch: x86_64
           runner: ubuntu-24.04
@@ -32,6 +35,7 @@ jobs:
           runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     env:
+      LINK: ${{ matrix.link }}
       LLVM_COMMIT: ${{ needs.setup.outputs.llvm-commit }}
     steps: &stage
     - uses: actions/checkout@main
@@ -56,89 +60,97 @@ jobs:
     - uses: actions/download-artifact@main
       if: env.RESTORE
       with:
-        name: ${{ env.RESTORE }}-${{ matrix.arch }}.tar.zst
+        name: ${{ env.RESTORE }}-${{ matrix.arch }}-${{ matrix.link }}.tar.zst
     - name: Unpack artifact
       if: env.RESTORE
-      run: bash ci.sh unpack ${{ env.RESTORE }}-${{ matrix.arch }}.tar.zst
+      run: bash ci.sh unpack ${{ env.RESTORE }}-${{ matrix.arch }}-${{ matrix.link }}.tar.zst
     - name: Run stage
       run: bash ci.sh llvm --actions-stage ${{ github.job }}
     - name: Pack artifact
       if: always()
-      run: bash ci.sh pack ${{ github.job }}-${{ matrix.arch }}.tar.zst
+      run: bash ci.sh pack ${{ github.job }}-${{ matrix.arch }}-${{ matrix.link }}.tar.zst
     - uses: actions/upload-artifact@main
       if: always()
       with:
-        path: ${{ github.job }}-${{ matrix.arch }}.tar.zst
+        path: ${{ github.job }}-${{ matrix.arch }}-${{ matrix.link }}.tar.zst
         archive: false
 
   ir-instrument:
-    name: Build IR instrumented LLVM (${{ matrix.arch }})
+    name: Build IR instrumented LLVM (${{ matrix.arch }}, ${{ matrix.link }})
     needs: bootstrap
     strategy: *matrix
     runs-on: ${{ matrix.runner }}
     env:
+      LINK: ${{ matrix.link }}
       RESTORE: bootstrap
     steps: *stage
 
   ir-profile:
-    name: Profile IR instrumented LLVM (${{ matrix.arch }})
+    name: Profile IR instrumented LLVM (${{ matrix.arch }}, ${{ matrix.link }})
     needs: ir-instrument
     strategy: *matrix
     runs-on: ${{ matrix.runner }}
     env:
+      LINK: ${{ matrix.link }}
       RESTORE: ir-instrument
     steps: *stage
 
   cs-instrument:
-    name: Build CSIR instrumented LLVM (${{ matrix.arch }})
+    name: Build CSIR instrumented LLVM (${{ matrix.arch }}, ${{ matrix.link }})
     needs: ir-profile
     strategy: *matrix
     runs-on: ${{ matrix.runner }}
     env:
+      LINK: ${{ matrix.link }}
       RESTORE: ir-profile
     steps: *stage
 
   cs-profile:
-    name: Profile CSIR instrumented LLVM (${{ matrix.arch }})
+    name: Profile CSIR instrumented LLVM (${{ matrix.arch }}, ${{ matrix.link }})
     needs: cs-instrument
     strategy: *matrix
     runs-on: ${{ matrix.runner }}
     env:
+      LINK: ${{ matrix.link }}
       RESTORE: cs-instrument
     steps: *stage
 
   final:
-    name: Build final LLVM (${{ matrix.arch }})
+    name: Build final LLVM (${{ matrix.arch }}, ${{ matrix.link }})
     needs: cs-profile
     strategy: *matrix
     runs-on: ${{ matrix.runner }}
     env:
+      LINK: ${{ matrix.link }}
       RESTORE: cs-profile
     steps: *stage
 
   bolt:
-    name: Optimize final LLVM with BOLT (${{ matrix.arch }})
+    name: Optimize final LLVM with BOLT (${{ matrix.arch }}, ${{ matrix.link }})
     needs: final
     strategy: *matrix
     runs-on: ${{ matrix.runner }}
     env:
+      LINK: ${{ matrix.link }}
       RESTORE: final
     steps: *stage
 
   dist:
-    name: Make distribution with binutils (${{ matrix.arch }})
+    name: Make distribution with binutils (${{ matrix.arch }}, ${{ matrix.link }})
     needs: bolt
     strategy: *matrix
     runs-on: ${{ matrix.runner }}
+    env:
+      LINK: ${{ matrix.link }}
     steps:
     - uses: actions/checkout@main
     - uses: actions/download-artifact@main
       with:
-        name: bolt-${{ matrix.arch }}.tar.zst
+        name: bolt-${{ matrix.arch }}-${{ matrix.link }}.tar.zst
     - name: Install dependencies
       run: bash ci.sh deps
     - name: Unpack artifact
-      run: bash ci.sh unpack bolt-${{ matrix.arch }}.tar.zst
+      run: bash ci.sh unpack bolt-${{ matrix.arch }}-${{ matrix.link }}.tar.zst
     - name: Build binutils
       run: bash ci.sh binutils
     - name: Strip and patch toolchain
@@ -147,20 +159,20 @@ jobs:
       run: bash ci.sh dist
     - uses: actions/upload-artifact@main
       with:
-        name: distribution-${{ matrix.arch }}
+        name: distribution-${{ matrix.arch }}-${{ matrix.link }}
         path: |
           toolchain-*.tar.xz
           notes.md
     - name: Pack artifact
       if: failure()
-      run: bash ci.sh pack dist-${{ matrix.arch }}.tar.zst
+      run: bash ci.sh pack dist-${{ matrix.arch }}-${{ matrix.link }}.tar.zst
     - uses: actions/upload-artifact@main
       if: failure()
       with:
-        path: dist-${{ matrix.arch }}.tar.zst
+        path: dist-${{ matrix.arch }}-${{ matrix.link }}.tar.zst
         archive: false
 
-  # Publish every arch in one release from one job, so they share its tag
+  # Publish every distribution in one release from one job, so they share its tag
   release:
     name: Publish release
     needs: dist

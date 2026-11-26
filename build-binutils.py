@@ -64,6 +64,14 @@ parser.add_argument(
     action='store_true',
 )
 parser.add_argument(
+    '--static',
+    help='''
+                    Link the tools statically, without support for plugins. The host needs a static
+                    version of every library that they use.
+                    ''',
+    action='store_true',
+)
+parser.add_argument(
     '-t',
     '--targets',
     help='''
@@ -144,6 +152,7 @@ for item in targets:
             if 'x86-64-v' in args.march:
                 builder.cflags.append('-mtune=native')
         builder.show_commands = args.show_build_commands
+        builder.static = args.static
         builder.build()
     else:
         tc_build.utils.print_warning(f"Unsupported target ('{target}'), ignoring...")

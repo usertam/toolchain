@@ -552,7 +552,8 @@ class LLVMBuilder(Builder):
                     for item in self.llvm_driver_binaries('clang')
                     if item not in distribution_components
                 ]
-            if self.distribution_profile in {'kernel', 'rust'}:
+            # A static build has no shared libraries
+            if self.distribution_profile in {'kernel', 'rust'} and not self.static_is_enabled():
                 distribution_components.append('libclang')
                 # With LLVM_LINK_LLVM_DYLIB=ON, omitting this results in:
                 #
@@ -741,6 +742,9 @@ class LLVMBuilder(Builder):
                 print()
         tc_build.utils.flush_std_err_out()
 
+    def static_is_enabled(self) -> bool:
+        return self.cmake_defines.get('LLVM_BUILD_STATIC', 'OFF') == 'ON'
+
     def validate_targets(self) -> None:
         if not tc_build.utils.path_is_set(self.folders.source):
             msg = 'No source folder set?'
@@ -855,7 +859,8 @@ class LLVMInstrumentedBuilder(LLVMBuilder):
         self.cmake_defines['LLVM_BUILD_RUNTIME'] = 'OFF'
 
     def configure(self):
-        no_multicall = not self.multicall_is_enabled()
+        # Neither a multicall nor a static build can link against the dylib
+        link_dylib = not self.multicall_is_enabled() and not self.static_is_enabled()
         # The following defines are needed to avoid thousands of warnings
         # along the lines of:
         # "Unable to track new values: Running out of static counters."
@@ -864,7 +869,7 @@ class LLVMInstrumentedBuilder(LLVMBuilder):
         # to use CMAKE_C{,XX}_FLAGS.
         cmake_options = Path(self.folders.source, 'llvm/cmake/modules/HandleLLVMOptions.cmake')
         cmake_text = cmake_options.read_text(encoding='utf-8')
-        if no_multicall and 'LLVM_VP_COUNTERS_PER_SITE' in cmake_text:
+        if link_dylib and 'LLVM_VP_COUNTERS_PER_SITE' in cmake_text:
             self.cmake_defines['LLVM_VP_COUNTERS_PER_SITE'] = '6'
         else:
             cflags = []
@@ -891,7 +896,7 @@ class LLVMInstrumentedBuilder(LLVMBuilder):
         # https://github.com/llvm/llvm-project/pull/133596
         # But that should not matter much in this case because multicall uses
         # much less disk space.
-        if no_multicall:
+        if link_dylib:
             self.cmake_defines['LLVM_LINK_LLVM_DYLIB'] = 'ON'
 
         super().configure()

@@ -1,0 +1,25 @@
+diff --git a/tools/objtool/signal.c b/tools/objtool/signal.c
+index af5c65c..7b7d809 100644
+--- a/tools/objtool/signal.c
++++ b/tools/objtool/signal.c
+@@ -106,12 +106,18 @@ int init_signal_handler(void)
+ 	if (read_stack_limit())
+ 		return -1;
+ 
+-	ss.ss_sp = malloc(SIGSTKSZ);
++	/*
++	 * SIGSTKSZ is a constant in musl, whose sigaltstack() refuses a stack
++	 * smaller than the minimum that the kernel reports for the CPU. With
++	 * AMX, that minimum is more than SIGSTKSZ, so ask for the size that
++	 * follows the CPU instead.
++	 */
++	ss.ss_size = sysconf(_SC_SIGSTKSZ);
++	ss.ss_sp = malloc(ss.ss_size);
+ 	if (!ss.ss_sp) {
+ 		ERROR_GLIBC("malloc");
+ 		return -1;
+ 	}
+-	ss.ss_size = SIGSTKSZ;
+ 	ss.ss_flags = 0;
+ 
+ 	if (sigaltstack(&ss, NULL) == -1) {

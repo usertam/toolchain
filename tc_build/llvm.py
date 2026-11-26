@@ -484,7 +484,7 @@ class LLVMBuilder(Builder):
             default_target_triple = subprocess.run(
                 ['clang', '-print-target-triple'], capture_output=True, check=True, text=True
             ).stdout.strip()
-            self.cmake_defines['LLVM_DEFAULT_TARGET_TRIPLE'] = default_target_triple
+            self.cmake_defines.setdefault('LLVM_DEFAULT_TARGET_TRIPLE', default_target_triple)
 
         self.handle_distribution_profile()
 

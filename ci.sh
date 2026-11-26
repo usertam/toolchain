@@ -6,16 +6,95 @@ src=$base/src
 
 set -eu
 
+# With LINK=static, the toolchain is linked statically against musl
+static=
+[[ ${LINK:-} = static ]] && static=static
+
+# Run a build script. A static toolchain is built in the Alpine image that
+# 'deps' builds, where every library comes as an archive too, with this folder
+# where it is on the host
+function run() {
+    if [[ -n $static ]]; then
+        docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --volume "$base:$base" \
+            --workdir "$base" \
+            toolchain "$@"
+    else
+        "$@"
+    fi
+}
+
 function do_binutils() {
-    "$base"/build-binutils.py \
+    run "$base"/build-binutils.py \
         --install-folder "$install" \
         --show-build-commands \
-        --targets aarch64 arm x86_64
+        --targets aarch64 arm x86_64 \
+        ${static:+--static}
 }
 
 function do_deps() {
     # We only run this when running on GitHub Actions
     [[ -z ${GITHUB_ACTIONS:-} ]] && return 0
+
+    # What is left for the host to do with a static toolchain, its image has
+    # the tools for. tini is there to reap the processes that an instrumented
+    # clang leaves behind to write its profile, which count as running for as
+    # long as nothing does
+    if [[ -n $static ]]; then
+        docker build --tag toolchain - <<'EOF'
+FROM alpine:3.24
+RUN apk add --no-cache \
+    bash \
+    bc \
+    bison \
+    clang \
+    cmake \
+    coreutils \
+    curl \
+    diffutils \
+    elfutils-dev \
+    file \
+    findutils \
+    flex \
+    g++ \
+    gawk \
+    git \
+    linux-headers \
+    lld \
+    llvm \
+    make \
+    ninja-is-really-ninja \
+    openssl-dev \
+    patch \
+    perl \
+    python3 \
+    sed \
+    tar \
+    texinfo \
+    tini \
+    xz \
+    zlib-static \
+    zstd-static
+# mimalloc for any CPU of the arch, without transparent huge pages, and with
+# arenas of 256 MiB: a process that maps the 1 GiB of the default at once is
+# costly on some hosts
+RUN git clone --branch v2.2.7 --depth 1 https://github.com/microsoft/mimalloc.git /tmp/mimalloc && \
+    cmake -S /tmp/mimalloc -B /tmp/mimalloc/build -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DMI_EXTRA_CPPDEFS='MI_DEFAULT_ARENA_RESERVE=262144;MI_DEFAULT_ALLOW_THP=0' \
+        -DMI_INSTALL_TOPLEVEL=ON \
+        -DMI_NO_OPT_ARCH=ON && \
+    cmake --build /tmp/mimalloc/build --target install && \
+    rm -rf /tmp/mimalloc
+# What do_llvm has the startup code of gcc call in place of libgcc
+RUN printf 'void __wrap___register_frame_info(void) {}\nvoid *__wrap___deregister_frame_info(void) { return 0; }\n' | \
+    clang -c -x c -o /usr/lib/frame-info.o -
+ENTRYPOINT ["tini", "--"]
+EOF
+        return
+    fi
 
     # Refresh mirrorlist to avoid dead mirrors
     sudo apt-get update -y
@@ -90,7 +169,26 @@ function do_llvm() {
         echo Y | sudo tee /sys/module/zswap/parameters/enabled
     fi
 
-    "$base"/build-llvm.py \
+    # Link every executable statically, with mimalloc in place of the malloc
+    # of musl, which is slow with many threads: the flags of the build type
+    # come before the objects, and lld takes malloc from the first archive
+    # that has it. musl also gives a thread a stack of 128 KiB unless the
+    # executable asks for more, which the ThinLTO threads of lld overflow.
+    # The startup code of gcc registers .eh_frame with libgcc, by an address
+    # that llvm-bolt gets wrong on aarch64 when it moves that code, so have it
+    # call functions that do nothing: libgcc then finds the section through
+    # the program headers, which llvm-bolt keeps right
+    local defines=()
+    if [[ -n $static ]]; then
+        defines=(
+            --defines
+            LLVM_BUILD_STATIC=ON
+            CMAKE_EXE_LINKER_FLAGS_RELEASE='-Wl,-z,stack-size=8388608 -Wl,--wrap=__register_frame_info,--wrap=__deregister_frame_info /usr/lib/frame-info.o /usr/lib/libmimalloc.a'
+        )
+    fi
+
+    run "$base"/build-llvm.py \
+        "${defines[@]}" \
         --projects clang lld \
         --targets AArch64 ARM X86 \
         --bolt \
@@ -130,6 +228,8 @@ function do_rust() {
 function do_fixup() {
     echo "Removing unused products..."
     rm -rf "$install"/include "$install"/lib/*.a "$install"/lib/*.la
+    # binutils builds its one plugin either way, which needs musl here
+    [[ -n $static ]] && rm -rf "$install"/lib/bfd-plugins
 
     # GNU strip before 2.44, which is what the host has, breaks a binary whose
     # program header table llvm-bolt has moved, so strip with the llvm-strip
@@ -187,7 +287,7 @@ function do_dist() {
     tar --sort=name \
         --mtime='1970-01-01' \
         --owner=0 --group=0 --numeric-owner \
-        -I "$xz" -cf "$base/toolchain-$(uname -m).tar.xz" \
+        -I "$xz" -cf "$base/toolchain-$(uname -m)${static:+-static}.tar.xz" \
         -C "$install" $(ls "$install")
 
     cat <<EOF >"$base"/notes.md
